@@ -90,6 +90,11 @@ export type ModelsCompactOptions = CompactOptions & ModelsRequestTransforms;
 export type ModelsDeferredFetchOptions = DeferredFetchOptions & ModelsRequestTransforms;
 export type ModelsDeferredCancelOptions = DeferredCancelOptions & ModelsRequestTransforms;
 
+export interface ProviderCompaction<TApi extends Api = Api> {
+	supports(model: Model<TApi>): boolean;
+	run(model: Model<TApi>, context: TranscriptContext, options?: CompactOptions): Promise<ProviderCompactionResult>;
+}
+
 /**
  * A provider is the concrete runtime unit. It owns id/name/base metadata,
  * auth methods, model listing, and stream behavior.
@@ -150,11 +155,7 @@ export interface Provider<TApi extends Api = Api> {
 		context: TranscriptContext,
 		options?: SimpleStreamOptions,
 	): AssistantMessageEventStream;
-	compact?(
-		model: Model<TApi>,
-		context: TranscriptContext,
-		options?: CompactOptions,
-	): Promise<ProviderCompactionResult>;
+	compaction?: ProviderCompaction<TApi>;
 	fetchDeferred?(
 		model: Model<TApi>,
 		handle: DeferredHandle,
@@ -229,6 +230,7 @@ export interface Models {
 
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream;
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage>;
+	supportsCompaction(model: Model<Api>): boolean;
 	compact(model: Model<Api>, context: Context, options?: ModelsCompactOptions): Promise<ProviderCompactionResult>;
 	streamDeferred(
 		model: Model<Api>,
@@ -726,18 +728,22 @@ class ModelsImpl implements MutableModels {
 		return this.streamSimple(model, context, options).result();
 	}
 
+	supportsCompaction(model: Model<Api>): boolean {
+		return this.providers.get(model.provider)?.compaction?.supports(model) ?? false;
+	}
+
 	async compact(
 		model: Model<Api>,
 		context: Context,
 		options?: ModelsCompactOptions,
 	): Promise<ProviderCompactionResult> {
 		const provider = this.requireProvider(model);
-		if (!provider.compact) {
+		if (!provider.compaction?.supports(model)) {
 			throw new ModelsError("provider", `Provider ${model.provider} does not support context compaction`);
 		}
 		const transcript = normalizeContext(context);
 		const { requestModel, requestOptions } = await this.applyAuth(model, options);
-		return provider.compact(requestModel, transcript, requestOptions as CompactOptions);
+		return provider.compaction.run(requestModel, transcript, requestOptions as CompactOptions);
 	}
 
 	streamDeferred(
@@ -878,15 +884,18 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 
 	const streams = single ? [single] : Object.values(byApi ?? {}).filter((entry) => entry !== undefined);
 	if (streams.some((entry) => entry.compact !== undefined)) {
-		provider.compact = async (model, context, options) => {
-			const implementation = apiFor(model);
-			if (!implementation?.compact) {
-				throw new ModelsError(
-					"provider",
-					`Provider ${input.id} does not support context compaction for "${model.api}"`,
-				);
-			}
-			return implementation.compact(model, context, options);
+		provider.compaction = {
+			supports: (model) => apiFor(model)?.compact !== undefined,
+			run: async (model, context, options) => {
+				const implementation = apiFor(model);
+				if (!implementation?.compact) {
+					throw new ModelsError(
+						"provider",
+						`Provider ${input.id} does not support context compaction for "${model.api}"`,
+					);
+				}
+				return implementation.compact(model, context, options);
+			},
 		};
 	}
 	if (streams.some((entry) => entry.fetchDeferred !== undefined)) {

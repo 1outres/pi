@@ -31,6 +31,7 @@ import type {
 	AuthResult,
 	ImageContent,
 	Model,
+	ProviderCompactionResult,
 	ProviderHeaders,
 	ProviderHistoryMessage,
 	SystemMessage,
@@ -755,7 +756,7 @@ export class AgentSession {
 					entryId = manager.appendContextEdit(draft.targetId, draft.replacement);
 					break;
 				case "compaction": {
-					throw new Error("Extension compaction is disabled; only OpenAI native compaction is supported");
+					throw new Error("Extension compaction is disabled; only provider-native compaction is supported");
 				}
 			}
 			const entry = manager.getEntry(entryId);
@@ -2344,18 +2345,18 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
-	/** Run OpenAI Codex native compaction for manual and automatic compaction. */
-	private async _runNativeCompaction(
+	/** Run provider-native compaction for manual and automatic compaction. */
+	private async _runProviderCompaction(
 		preparation: CompactionPreparation,
 		model: Model<any>,
 		customInstructions: string | undefined,
 		signal: AbortSignal,
 	): Promise<CompactionResult> {
 		if (customInstructions !== undefined) {
-			throw new Error("Custom compaction instructions are not supported by OpenAI native compaction");
+			throw new Error("Custom compaction instructions are not supported by provider-native compaction");
 		}
-		if (model.provider !== "openai-codex" || model.api !== "openai-codex-responses") {
-			throw new Error("Only openai-codex models support context compaction");
+		if (!this._modelRuntime.supportsCompaction(model)) {
+			throw new Error(`Provider ${model.provider} does not support context compaction for ${model.id}`);
 		}
 		const projected = this.sessionManager.buildSessionProjection().messages;
 		const transformed = this.agent.transformContext
@@ -2373,15 +2374,16 @@ export class AgentSession {
 				...(this.agent.onResponse ? { onResponse: this.agent.onResponse } : {}),
 			},
 		);
-		this._assertNativeCompactionHistory(result.history, model);
+		this._assertProviderCompactionResult(result, model);
 		return {
-			summary: "OpenAI native compaction",
+			summary: "Provider native compaction",
 			firstKeptEntryId: preparation.firstKeptEntryId,
 			tokensBefore: preparation.tokensBefore,
 			usage: result.usage,
 			details: {
-				type: "openai.responses.compaction",
-				version: 2,
+				type: "provider.compaction",
+				version: 1,
+				api: model.api,
 				provider: model.provider,
 				model: model.id,
 				responseId: result.responseId,
@@ -2390,21 +2392,24 @@ export class AgentSession {
 		};
 	}
 
-	private _assertNativeCompactionHistory(history: ProviderHistoryMessage, model: Model<any>): void {
-		if (history.api !== model.api || history.provider !== model.provider || history.model !== model.id) {
-			throw new Error("OpenAI native compaction returned history for a different model");
+	private _assertProviderCompactionResult(
+		result: ProviderCompactionResult,
+		model: Model<any>,
+	): asserts result is ProviderCompactionResult & { history: ProviderHistoryMessage } {
+		const { history } = result;
+		if (
+			history.role !== "providerHistory" ||
+			history.api !== model.api ||
+			history.provider !== model.provider ||
+			history.model !== model.id
+		) {
+			throw new Error("Provider native compaction returned history for a different model");
 		}
-		const compactionItems = history.items.filter((item) => {
-			if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
-			const record = item as Record<string, unknown>;
-			return (
-				record.type === "compaction" &&
-				typeof record.encrypted_content === "string" &&
-				record.encrypted_content.length > 0
-			);
-		});
-		if (compactionItems.length !== 1) {
-			throw new Error("OpenAI native compaction must return exactly one valid compaction item");
+		if (!Array.isArray(history.items) || history.items.length === 0) {
+			throw new Error("Provider native compaction returned empty history");
+		}
+		if (typeof result.responseId !== "string" || result.responseId.length === 0) {
+			throw new Error("Provider native compaction returned an invalid response ID");
 		}
 	}
 
@@ -2419,7 +2424,7 @@ export class AgentSession {
 	 * This is the manual entry point used by `/compact`, RPC, and extensions. It is
 	 * separate from automatic threshold/overflow compaction, which enters through
 	 * `_checkCompaction()` and `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, both paths call OpenAI Codex native compaction.
+	 * `session_before_compact` hook, both paths call provider-native compaction.
 	 * Extensions may cancel the operation but cannot replace the native result.
 	 *
 	 * Aborts the current agent operation first. Manual compaction never retries or
@@ -2470,11 +2475,11 @@ export class AgentSession {
 				}
 
 				if (result?.compaction) {
-					throw new Error("Extension compaction is disabled; only OpenAI native compaction is supported");
+					throw new Error("Extension compaction is disabled; only provider-native compaction is supported");
 				}
 			}
 
-			const nativeResult = await this._runNativeCompaction(
+			const nativeResult = await this._runProviderCompaction(
 				preparation,
 				model,
 				customInstructions,
@@ -2587,9 +2592,8 @@ export class AgentSession {
 	 *    configured threshold; compact without retrying the completed response.
 	 *
 	 * Each case calls `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, that method calls the lower-level `compact()`
-	 * function imported from `./compaction/index.ts`, unless the hook cancels or
-	 * supplies a custom result.
+	 * `session_before_compact` hook, that method calls provider-native compaction
+	 * unless the hook cancels the operation.
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -2735,7 +2739,7 @@ export class AgentSession {
 
 	/**
 	 * Execute threshold or overflow compaction. Manual compaction uses
-	 * `AgentSession.compact()` instead. Both paths use OpenAI Codex native compaction
+	 * `AgentSession.compact()` instead. Both paths use provider-native compaction
 	 * after extensions have had a chance to cancel the operation.
 	 *
 	 * @param reason Automatic trigger selected by `_checkCompaction()`
@@ -2784,12 +2788,12 @@ export class AgentSession {
 				}
 
 				if (extensionResult?.compaction) {
-					throw new Error("Extension compaction is disabled; only OpenAI native compaction is supported");
+					throw new Error("Extension compaction is disabled; only provider-native compaction is supported");
 				}
 			}
 			abortController.signal.throwIfAborted();
 
-			const nativeResult = await this._runNativeCompaction(preparation, model, undefined, abortController.signal);
+			const nativeResult = await this._runProviderCompaction(preparation, model, undefined, abortController.signal);
 			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = nativeResult;
 			abortController.signal.throwIfAborted();
 

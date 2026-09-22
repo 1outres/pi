@@ -24,6 +24,19 @@ const model: Model<"openai-codex-responses"> = {
 	maxTokens: 128_000,
 };
 
+const portableModel: Model<"test-native-compaction"> = {
+	id: "portable-model",
+	name: "Portable Model",
+	api: "test-native-compaction",
+	provider: "native-test",
+	baseUrl: "https://native.test/v1",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1_050_000,
+	maxTokens: 128_000,
+};
+
 const usage: Usage = {
 	input: 10,
 	output: 2,
@@ -46,14 +59,23 @@ const history: ProviderHistoryMessage = {
 	timestamp: 2,
 };
 
-function seed(manager: SessionManager): string {
+const portableHistory: ProviderHistoryMessage = {
+	role: "providerHistory",
+	api: portableModel.api,
+	provider: portableModel.provider,
+	model: portableModel.id,
+	items: [{ type: "native-summary", payload: "opaque-state" }],
+	timestamp: 2,
+};
+
+function seed(manager: SessionManager, selectedModel: Model<any> = model): string {
 	const firstEntryId = manager.appendMessage({ role: "user", content: "remember this", timestamp: 1 });
 	manager.appendMessage({
 		role: "assistant",
 		content: [{ type: "text", text: "remembered" }],
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
+		api: selectedModel.api,
+		provider: selectedModel.provider,
+		model: selectedModel.id,
 		usage: { ...usage, totalTokens: 100 },
 		stopReason: "stop",
 		timestamp: 2,
@@ -67,6 +89,53 @@ describe("native-only AgentSession compaction", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		while (sessions.length > 0) sessions.pop()?.dispose();
+	});
+
+	it("uses provider capability without checking provider names or opaque item formats", async () => {
+		const manager = SessionManager.inMemory();
+		seed(manager, portableModel);
+		const supportsCompaction = vi.fn(() => true);
+		const compact = vi.fn(
+			async (): Promise<ProviderCompactionResult> => ({
+				history: portableHistory,
+				responseId: "native-response-1",
+				usage,
+			}),
+		);
+		const runtime = {
+			supportsCompaction,
+			compact,
+			getModel: () => portableModel,
+		} as unknown as ModelRuntime;
+		const agent = new Agent({
+			streamFn: vi.fn() as unknown as StreamFn,
+			initialState: { model: portableModel, messages: manager.buildSessionContext().messages },
+			convertToLlm,
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory({ compaction: { keepRecentTokens: 1 } }),
+			cwd: process.cwd(),
+			modelRuntime: runtime,
+			resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+
+		const result = await session.compact();
+
+		expect(supportsCompaction).toHaveBeenCalledWith(portableModel);
+		expect(compact).toHaveBeenCalledOnce();
+		expect(result).toMatchObject({
+			summary: "Provider native compaction",
+			replacementHistory: [portableHistory],
+			details: {
+				type: "provider.compaction",
+				provider: portableModel.provider,
+				model: portableModel.id,
+				responseId: "native-response-1",
+			},
+		});
 	});
 
 	it("uses ModelRuntime.compact and never calls the summary stream", async () => {
@@ -83,6 +152,7 @@ describe("native-only AgentSession compaction", () => {
 			}),
 		);
 		const runtime = {
+			supportsCompaction: vi.fn(() => true),
 			compact,
 			getModel: () => model,
 			getAuth: vi.fn(),
@@ -111,10 +181,10 @@ describe("native-only AgentSession compaction", () => {
 		const entry = manager.getEntries().find((candidate) => candidate.type === "compaction");
 		expect(entry).toMatchObject({
 			type: "compaction",
-			summary: "OpenAI native compaction",
+			summary: "Provider native compaction",
 			replacementHistory: [history],
 			details: {
-				type: "openai.responses.compaction",
+				type: "provider.compaction",
 				provider: model.provider,
 				model: model.id,
 				responseId: "resp_compact_1",
@@ -126,6 +196,7 @@ describe("native-only AgentSession compaction", () => {
 		const manager = SessionManager.inMemory();
 		seed(manager);
 		const runtime = {
+			supportsCompaction: vi.fn(() => true),
 			compact: vi.fn().mockRejectedValue(new Error("native endpoint unavailable")),
 			getModel: () => model,
 		} as unknown as ModelRuntime;
@@ -148,6 +219,41 @@ describe("native-only AgentSession compaction", () => {
 		expect(manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
+	it("rejects providers without native compaction and does not run summary compaction", async () => {
+		const manager = SessionManager.inMemory();
+		seed(manager, portableModel);
+		const summaryStream = vi.fn(() => {
+			throw new Error("Pi summary compaction must not run");
+		});
+		const compact = vi.fn();
+		const runtime = {
+			supportsCompaction: vi.fn(() => false),
+			compact,
+			getModel: () => portableModel,
+		} as unknown as ModelRuntime;
+		const agent = new Agent({
+			streamFn: summaryStream as unknown as StreamFn,
+			initialState: { model: portableModel, messages: manager.buildSessionContext().messages },
+			convertToLlm,
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory({ compaction: { keepRecentTokens: 1 } }),
+			cwd: process.cwd(),
+			modelRuntime: runtime,
+			resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+
+		await expect(session.compact()).rejects.toThrow(
+			"Provider native-test does not support context compaction for portable-model",
+		);
+		expect(compact).not.toHaveBeenCalled();
+		expect(summaryStream).not.toHaveBeenCalled();
+		expect(manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
+
 	it("uses the same native-only path for automatic compaction", async () => {
 		const manager = SessionManager.inMemory();
 		seed(manager);
@@ -161,7 +267,11 @@ describe("native-only AgentSession compaction", () => {
 				usage,
 			}),
 		);
-		const runtime = { compact, getModel: () => model } as unknown as ModelRuntime;
+		const runtime = {
+			supportsCompaction: vi.fn(() => true),
+			compact,
+			getModel: () => model,
+		} as unknown as ModelRuntime;
 		const agent = new Agent({
 			streamFn: summaryStream as unknown as StreamFn,
 			initialState: { model, messages: manager.buildSessionContext().messages },
@@ -223,6 +333,8 @@ describe("OpenAI Codex model restriction", () => {
 
 		expect(runtime.getProviders().map((provider) => provider.id)).toEqual(["openai-codex"]);
 		expect(runtime.getModels().every((candidate) => candidate.provider === "openai-codex")).toBe(true);
+		expect(runtime.supportsCompaction(model)).toBe(true);
+		expect(runtime.supportsCompaction(portableModel)).toBe(false);
 		expect(() => runtime.registerProvider("anthropic", {})).toThrow("Provider anthropic is disabled");
 	});
 });

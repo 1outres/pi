@@ -664,17 +664,24 @@ export class ModelRuntime implements Models {
 		return this.streamSimple(model, context, options).result();
 	}
 
+	supportsCompaction(model: Model<Api>): boolean {
+		return this.models.supportsCompaction(model);
+	}
+
 	async compact(
 		model: Model<Api>,
 		context: Context,
 		options?: ModelsCompactOptions,
 	): Promise<ProviderCompactionResult> {
-		const transcript = normalizeContext(context);
-		const prepared = await this.prepareRequest(model, options);
-		if (!prepared.provider.compact) {
+		if (!this.supportsCompaction(model)) {
 			throw new ModelsError("provider", `Provider ${model.provider} does not support context compaction`);
 		}
-		return prepared.provider.compact(prepared.model, transcript, prepared.options as CompactOptions);
+		const transcript = normalizeContext(context);
+		const prepared = await this.prepareRequest(model, options);
+		if (!prepared.provider.compaction?.supports(prepared.model)) {
+			throw new ModelsError("provider", `Provider ${model.provider} does not support context compaction`);
+		}
+		return prepared.provider.compaction.run(prepared.model, transcript, prepared.options as CompactOptions);
 	}
 
 	streamDeferred(

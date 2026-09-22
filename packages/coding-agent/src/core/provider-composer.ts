@@ -550,10 +550,13 @@ export function composeModelProvider(
 		stream: (model, context, options) => streamWith(model, context, options, false),
 		streamSimple: (model, context, options) => streamWith(model, context, options, true),
 	};
-	const compact = base?.compact;
-	if (compact) {
-		provider.compact = (model, context, options: CompactOptions): Promise<ProviderCompactionResult> =>
-			compact(model, context, options);
+	const compaction = base?.compaction;
+	if (compaction) {
+		provider.compaction = {
+			supports: (model) => compaction.supports(model),
+			run: (model, context, options: CompactOptions): Promise<ProviderCompactionResult> =>
+				compaction.run(model, context, options),
+		};
 	}
 
 	const fetchDeferred = base?.fetchDeferred;

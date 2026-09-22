@@ -58,6 +58,7 @@ function testProvider(input: {
 	auth?: ProviderAuth;
 	getModels?: () => readonly Model<Api>[];
 	refreshModels?: Provider["refreshModels"];
+	compaction?: Provider["compaction"];
 	calls?: ProviderCall[];
 }): Provider {
 	const models = input.models ?? [testModel(input.id, "model-a")];
@@ -76,6 +77,7 @@ function testProvider(input: {
 		auth: input.auth ?? { apiKey: ambientAuth },
 		getModels: input.getModels ?? (() => models),
 		refreshModels: input.refreshModels,
+		compaction: input.compaction,
 		stream: (model, _context, options) => respond(model, options as StreamOptions | undefined),
 		streamSimple: (model, _context, options) => respond(model, options as SimpleStreamOptions | undefined),
 	};
@@ -196,6 +198,48 @@ describe("Models runtime", () => {
 			const _typed: Model<"test-api"> = found;
 			expect(_typed.id).toBe("m3");
 		}
+	});
+
+	it("discovers provider compaction support per model", async () => {
+		const modelA = testModel("native", "model-a");
+		const modelB = testModel("native", "model-b");
+		const run = vi.fn(async (requestModel: Model<Api>) => ({
+			history: {
+				role: "providerHistory" as const,
+				api: requestModel.api,
+				provider: requestModel.provider,
+				model: requestModel.id,
+				items: [{ type: "native-state" }],
+				timestamp: 1,
+			},
+			responseId: "compact-1",
+			usage: {
+				input: 1,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		}));
+		const models = createModels();
+		models.setProvider(
+			testProvider({
+				id: "native",
+				models: [modelA, modelB],
+				compaction: {
+					supports: (candidate) => candidate.id === modelA.id,
+					run,
+				},
+			}),
+		);
+
+		expect(models.supportsCompaction(modelA)).toBe(true);
+		expect(models.supportsCompaction(modelB)).toBe(false);
+		expect(models.supportsCompaction(testModel("missing", "model-a"))).toBe(false);
+		await expect(models.compact(modelA, context)).resolves.toMatchObject({ responseId: "compact-1" });
+		await expect(models.compact(modelB, context)).rejects.toThrow("does not support context compaction");
+		expect(run).toHaveBeenCalledOnce();
 	});
 
 	it("swallows provider source failures for both all-provider and single-provider listing", () => {
