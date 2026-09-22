@@ -780,7 +780,7 @@ export class ModelRuntime implements Models {
 
 	registerNativeProvider(provider: Provider): void {
 		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
-		if (!this.isProviderAllowed(provider.id)) throw new Error(`Provider ${provider.id} is disabled in this runtime.`);
+		if (!this.isProviderAllowed(provider.id)) return;
 		this.extensionProviders.delete(provider.id);
 		this.nativeExtensionProviders.set(provider.id, provider);
 		this.recomposeProvider(provider.id);
@@ -789,7 +789,7 @@ export class ModelRuntime implements Models {
 	}
 
 	registerProvider(providerId: string, config: ProviderConfigInput): void {
-		if (!this.isProviderAllowed(providerId)) throw new Error(`Provider ${providerId} is disabled in this runtime.`);
+		if (!this.isProviderAllowed(providerId)) return;
 		// Validate the incoming registration on its own, like the legacy registry:
 		// a broken re-registration must throw without touching the stored config.
 		validateExtensionProvider(providerId, this.builtins.get(providerId), this.config.getProvider(providerId), config);

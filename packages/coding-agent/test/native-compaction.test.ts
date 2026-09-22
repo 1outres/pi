@@ -324,17 +324,24 @@ describe("native-only AgentSession compaction", () => {
 });
 
 describe("OpenAI Codex model restriction", () => {
-	it("filters the runtime and rejects provider registration outside the allowlist", async () => {
+	it("filters the runtime without failing disabled extension provider registration", async () => {
 		const runtime = await ModelRuntime.create({
 			modelsPath: null,
 			refreshOnCreate: false,
 			allowedProviders: ["openai-codex"],
 		});
+		const openAICodex = runtime.getProvider("openai-codex");
+		expect(openAICodex).toBeDefined();
 
 		expect(runtime.getProviders().map((provider) => provider.id)).toEqual(["openai-codex"]);
 		expect(runtime.getModels().every((candidate) => candidate.provider === "openai-codex")).toBe(true);
 		expect(runtime.supportsCompaction(model)).toBe(true);
 		expect(runtime.supportsCompaction(portableModel)).toBe(false);
-		expect(() => runtime.registerProvider("anthropic", {})).toThrow("Provider anthropic is disabled");
+		expect(() => runtime.registerProvider("anthropic", {})).not.toThrow();
+		expect(() =>
+			runtime.registerNativeProvider({ ...openAICodex!, id: "llama.cpp", name: "llama.cpp" }),
+		).not.toThrow();
+		expect(runtime.getProvider("anthropic")).toBeUndefined();
+		expect(runtime.getProvider("llama.cpp")).toBeUndefined();
 	});
 });
