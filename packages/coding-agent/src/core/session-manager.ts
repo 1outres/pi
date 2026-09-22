@@ -4,6 +4,7 @@ import {
 	getCurrentSystemMessage,
 	type ImageContent,
 	type Message,
+	type ProviderHistoryMessage,
 	type SystemMessage,
 	type TextContent,
 	type ToolResultMessage,
@@ -101,6 +102,8 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	fromHook?: boolean;
 	/** Complete prompt and tool state at this compaction boundary. */
 	systemMessage?: SystemMessage;
+	/** Opaque provider-native context that replaces every entry before this boundary. */
+	replacementHistory?: ProviderHistoryMessage[];
 }
 
 export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
@@ -459,6 +462,12 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
 	}
 	if (entry.type === "compaction") {
+		if (entry.replacementHistory !== undefined) {
+			if (entry.replacementHistory.length === 0) {
+				throw new Error("Compaction replacement history must be a non-empty array");
+			}
+			return entry.systemMessage ? [entry.systemMessage, ...entry.replacementHistory] : entry.replacementHistory;
+		}
 		const summary = createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
 		return entry.systemMessage ? [entry.systemMessage, summary] : [summary];
 	}
@@ -497,6 +506,10 @@ export function buildContextEntries(
 	}
 
 	const contextEntries: SessionEntry[] = [compaction];
+	if (compaction.replacementHistory !== undefined) {
+		contextEntries.push(...path.slice(compactionIdx + 1));
+		return contextEntries;
+	}
 	let foundFirstKept = false;
 	for (let i = 0; i < compactionIdx; i++) {
 		const entry = path[i];
@@ -767,11 +780,13 @@ export function findMostRecentSession(sessionDir: string, cwd?: string): string 
 	}
 }
 
-function isMessageWithContent(message: AgentMessage): message is Message {
+type MessageWithContent = Exclude<Message, ProviderHistoryMessage>;
+
+function isMessageWithContent(message: AgentMessage): message is MessageWithContent {
 	return typeof (message as Message).role === "string" && "content" in message;
 }
 
-function extractTextContent(message: Message): string {
+function extractTextContent(message: MessageWithContent): string {
 	const content = message.content;
 	if (typeof content === "string") {
 		return content;
@@ -1263,7 +1278,11 @@ export class SessionManager {
 		details?: T,
 		fromHook?: boolean,
 		usage?: Usage,
+		replacementHistory?: ProviderHistoryMessage[],
 	): string {
+		if (replacementHistory !== undefined && replacementHistory.length === 0) {
+			throw new Error("Compaction replacement history must be a non-empty array");
+		}
 		const timestamp = new Date().toISOString();
 		const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
 		const id = generateId(this.byId);
@@ -1278,6 +1297,7 @@ export class SessionManager {
 			details,
 			usage,
 			fromHook,
+			replacementHistory,
 			...(systemMessage ? { systemMessage: { ...systemMessage, timestamp: new Date(timestamp).getTime() } } : {}),
 		};
 		this._appendEntry(entry);

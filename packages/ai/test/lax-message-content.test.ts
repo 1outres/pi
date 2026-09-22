@@ -61,7 +61,7 @@ describe("lax message content handling", () => {
 
 		expect(result).toHaveLength(3);
 		for (const msg of result) {
-			expect(msg.content).toEqual([]);
+			expect("content" in msg ? msg.content : undefined).toEqual([]);
 		}
 	});
 });

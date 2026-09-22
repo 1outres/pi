@@ -5,6 +5,7 @@ import {
 	type AuthContext,
 	type AuthInteraction,
 	type AuthResult,
+	type CompactOptions,
 	type Credential,
 	lazyStream,
 	type Model,
@@ -13,6 +14,7 @@ import {
 	type OAuthCredentials,
 	type OAuthLoginCallbacks,
 	type Provider,
+	type ProviderCompactionResult,
 	type ProviderHeaders,
 	type RefreshModelsContext,
 	type SimpleStreamOptions,
@@ -548,6 +550,11 @@ export function composeModelProvider(
 		stream: (model, context, options) => streamWith(model, context, options, false),
 		streamSimple: (model, context, options) => streamWith(model, context, options, true),
 	};
+	const compact = base?.compact;
+	if (compact) {
+		provider.compact = (model, context, options: CompactOptions): Promise<ProviderCompactionResult> =>
+			compact(model, context, options);
+	}
 
 	const fetchDeferred = base?.fetchDeferred;
 	if (fetchDeferred) {

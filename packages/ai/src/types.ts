@@ -283,6 +283,7 @@ export interface ProviderStreams {
 		context: TranscriptContext,
 		options?: SimpleStreamOptions,
 	): AssistantMessageEventStream;
+	compact?(model: Model<Api>, context: TranscriptContext, options?: CompactOptions): Promise<ProviderCompactionResult>;
 	fetchDeferred?(
 		model: Model<Api>,
 		handle: DeferredHandle,
@@ -330,6 +331,17 @@ export interface SimpleStreamOptions extends StreamOptions {
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
+}
+
+export interface CompactOptions extends ProviderRequestOptions<Model<Api>> {
+	sessionId?: string;
+	reasoning?: ModelThinkingLevel;
+}
+
+export interface ProviderCompactionResult {
+	history: ProviderHistoryMessage;
+	responseId: string;
+	usage: Usage;
 }
 
 // Generic StreamFunction with typed options.
@@ -550,7 +562,16 @@ export type ToolResultMessage<TDetails = JsonValue> = IsJsonCompatible<TDetails>
 		}
 	: never;
 
-export type Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage;
+export interface ProviderHistoryMessage {
+	role: "providerHistory";
+	api: Api;
+	provider: ProviderId;
+	model: string;
+	items: JsonValue[];
+	timestamp: number;
+}
+
+export type Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage | ProviderHistoryMessage;
 
 export type ImagesInputContent = TextContent | ImageContent;
 export type ImagesOutputContent = TextContent | ImageContent;

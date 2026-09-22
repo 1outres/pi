@@ -66,6 +66,7 @@ export function lazyStream(
  * loads. Load failures terminate the returned stream with an error event.
  */
 export interface LazyApiCapabilities {
+	compact?: boolean;
 	fetchDeferred?: boolean;
 	cancelDeferred?: boolean;
 }
@@ -78,6 +79,13 @@ export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: Laz
 			lazyStream(model, async () => (await load()).streamSimple(model, context, options)),
 	};
 
+	if (capabilities?.compact) {
+		api.compact = async (model, context, options) => {
+			const implementation = await load();
+			if (!implementation.compact) throw new Error("API does not support context compaction");
+			return implementation.compact(model, context, options);
+		};
+	}
 	if (capabilities?.fetchDeferred) {
 		api.fetchDeferred = (model, handle, options) =>
 			lazyStream(model, async () => {

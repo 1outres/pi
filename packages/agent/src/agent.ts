@@ -41,7 +41,8 @@ function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
 			message.role === "system" ||
 			message.role === "user" ||
 			message.role === "assistant" ||
-			message.role === "toolResult",
+			message.role === "toolResult" ||
+			message.role === "providerHistory",
 	);
 }
 

@@ -216,7 +216,12 @@ export function convertResponsesMessages<TApi extends Api>(
 	let sourceIndex = 0;
 	for (const msg of transformedMessages) {
 		const isLeadingSystemMessage = sourceIndex++ === 0 && msg.role === "system";
-		if (msg.role === "system") {
+		if (msg.role === "providerHistory") {
+			if (msg.api !== model.api || msg.provider !== model.provider || msg.model !== model.id) {
+				throw new Error(`Provider history requires ${msg.provider}/${msg.model} via ${msg.api}`);
+			}
+			messages.push(...(msg.items as unknown as ResponseInput));
+		} else if (msg.role === "system") {
 			if (!isLeadingSystemMessage) appendSystemToolAdditions(msg, `system:${msgIndex}`);
 			if (!isLeadingSystemMessage || includeInitialSystemMessage) {
 				const text = isLeadingSystemMessage ? getSystemMessageText(msg) : renderSystemMessageUpdate(msg);

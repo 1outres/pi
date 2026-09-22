@@ -18,6 +18,7 @@ import {
 import type {
 	AssistantMessage,
 	Model,
+	ProviderHistoryMessage,
 	SimpleStreamOptions,
 	SystemMessage,
 	TranscriptContext,
@@ -110,6 +111,8 @@ export interface CompactionResult<T = unknown> {
 	usage?: Usage;
 	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
 	details?: T;
+	/** Opaque provider-native history that replaces the compacted transcript. */
+	replacementHistory?: ProviderHistoryMessage[];
 }
 
 function combineUsage(first: Usage, second: Usage): Usage {
@@ -338,6 +341,8 @@ export function estimateTokens(message: AgentMessage): number {
 			);
 			return Math.ceil(chars / 4);
 		}
+		case "providerHistory":
+			return Math.ceil(JSON.stringify(message.items).length / 4);
 		case "assistant": {
 			const assistant = message as AssistantMessage;
 			for (const block of assistant.content) {
@@ -381,6 +386,8 @@ function isCutPointMessage(message: AgentMessage): boolean {
 			return true;
 		case "toolResult":
 			return false;
+		case "providerHistory":
+			return false;
 	}
 	return false;
 }
@@ -395,6 +402,8 @@ function isTurnStartMessage(message: AgentMessage): boolean {
 			return true;
 		case "assistant":
 		case "toolResult":
+			return false;
+		case "providerHistory":
 			return false;
 	}
 	return false;

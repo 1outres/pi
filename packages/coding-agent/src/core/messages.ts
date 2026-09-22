@@ -185,6 +185,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "user":
 				case "assistant":
 				case "toolResult":
+				case "providerHistory":
 					return m;
 				default:
 					// biome-ignore lint/correctness/noSwitchDeclarations: fine

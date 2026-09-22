@@ -784,6 +784,9 @@ function toChatMessages(messages: Message[], supportsImages: boolean): MistralCh
 	const result: MistralChatMessage[] = [];
 
 	for (const [index, msg] of messages.entries()) {
+		if (msg.role === "providerHistory") {
+			throw new Error("Provider history can only be replayed by its original provider");
+		}
 		if (msg.role === "system") {
 			const text = index === 0 ? getSystemMessageText(msg) : renderSystemMessageUpdate(msg);
 			if (text.length > 0) result.push({ role: "system", content: sanitizeSurrogates(text) });

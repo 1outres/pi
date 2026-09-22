@@ -211,6 +211,9 @@ function messageToText(message: Message): string {
 	if (message.role === "assistant") {
 		return assistantContentToText(message.content);
 	}
+	if (message.role === "providerHistory") {
+		return JSON.stringify(message.items);
+	}
 	return toolResultToText(message);
 }
 

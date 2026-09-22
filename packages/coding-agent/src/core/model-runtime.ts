@@ -9,6 +9,7 @@ import {
 	type AuthOperationOptions,
 	type AuthResult,
 	type AuthType,
+	type CompactOptions,
 	type Context,
 	type Credential,
 	type CredentialInfo,
@@ -21,6 +22,7 @@ import {
 	type Model,
 	type Models,
 	type ModelsApiStreamOptions,
+	type ModelsCompactOptions,
 	type ModelsDeferredCancelOptions,
 	type ModelsDeferredFetchOptions,
 	ModelsError,
@@ -32,6 +34,7 @@ import {
 	type MutableModels,
 	normalizeContext,
 	type Provider,
+	type ProviderCompactionResult,
 	type ProviderHeaders,
 	type ProviderRequestOptions,
 	type SimpleStreamOptions,
@@ -80,6 +83,8 @@ export interface CreateModelRuntimeOptions {
 	signal?: AbortSignal;
 	/** Skip initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
+	/** Restrict this runtime to the listed provider IDs. Omit to keep the library runtime general. */
+	allowedProviders?: readonly string[];
 }
 
 export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
@@ -151,6 +156,7 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
+	private readonly allowedProviders: ReadonlySet<string> | undefined;
 
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -159,12 +165,16 @@ export class ModelRuntime implements Models {
 		modelsStore: ModelsStore,
 		providers: readonly Provider[],
 		modelNetworkEnabled: boolean,
+		allowedProviders: readonly string[] | undefined,
 	) {
 		this.credentials = credentials;
 		this.config = config;
 		this.modelsPath = modelsPath;
 		this.modelNetworkEnabled = modelNetworkEnabled;
-		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
+		this.allowedProviders = allowedProviders ? new Set(allowedProviders) : undefined;
+		this.defaultBuiltins = new Map(
+			providers.filter((provider) => this.isProviderAllowed(provider.id)).map((provider) => [provider.id, provider]),
+		);
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
 		this.rebuildProviders();
@@ -195,6 +205,7 @@ export class ModelRuntime implements Models {
 			modelsStore,
 			providers,
 			process.env.PI_OFFLINE === undefined,
+			options.allowedProviders,
 		);
 		runtime.configureRadiusProviders();
 		runtime.rebuildProviders();
@@ -235,12 +246,18 @@ export class ModelRuntime implements Models {
 	}
 
 	private providerIds(): Set<string> {
-		return new Set([
-			...this.builtins.keys(),
-			...this.nativeExtensionProviders.keys(),
-			...this.config.getProviderIds(),
-			...this.extensionProviders.keys(),
-		]);
+		return new Set(
+			[
+				...this.builtins.keys(),
+				...this.nativeExtensionProviders.keys(),
+				...this.config.getProviderIds(),
+				...this.extensionProviders.keys(),
+			].filter((providerId) => this.isProviderAllowed(providerId)),
+		);
+	}
+
+	private isProviderAllowed(providerId: string): boolean {
+		return this.allowedProviders?.has(providerId) ?? true;
 	}
 
 	private recomposeProvider(providerId: string): void {
@@ -647,6 +664,19 @@ export class ModelRuntime implements Models {
 		return this.streamSimple(model, context, options).result();
 	}
 
+	async compact(
+		model: Model<Api>,
+		context: Context,
+		options?: ModelsCompactOptions,
+	): Promise<ProviderCompactionResult> {
+		const transcript = normalizeContext(context);
+		const prepared = await this.prepareRequest(model, options);
+		if (!prepared.provider.compact) {
+			throw new ModelsError("provider", `Provider ${model.provider} does not support context compaction`);
+		}
+		return prepared.provider.compact(prepared.model, transcript, prepared.options as CompactOptions);
+	}
+
 	streamDeferred(
 		model: Model<Api>,
 		handle: DeferredHandle,
@@ -743,6 +773,7 @@ export class ModelRuntime implements Models {
 
 	registerNativeProvider(provider: Provider): void {
 		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
+		if (!this.isProviderAllowed(provider.id)) throw new Error(`Provider ${provider.id} is disabled in this runtime.`);
 		this.extensionProviders.delete(provider.id);
 		this.nativeExtensionProviders.set(provider.id, provider);
 		this.recomposeProvider(provider.id);
@@ -751,6 +782,7 @@ export class ModelRuntime implements Models {
 	}
 
 	registerProvider(providerId: string, config: ProviderConfigInput): void {
+		if (!this.isProviderAllowed(providerId)) throw new Error(`Provider ${providerId} is disabled in this runtime.`);
 		// Validate the incoming registration on its own, like the legacy registry:
 		// a broken re-registration must throw without touching the stored config.
 		validateExtensionProvider(providerId, this.builtins.get(providerId), this.config.getProvider(providerId), config);

@@ -32,6 +32,7 @@ import type {
 	ImageContent,
 	Model,
 	ProviderHeaders,
+	ProviderHistoryMessage,
 	SystemMessage,
 	TextContent,
 	ToolResultMessage,
@@ -63,7 +64,6 @@ import {
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
-	compact,
 	estimateContextTokens,
 	estimateProjectedContextTokens,
 	estimateTokens,
@@ -755,19 +755,7 @@ export class AgentSession {
 					entryId = manager.appendContextEdit(draft.targetId, draft.replacement);
 					break;
 				case "compaction": {
-					const tokensBefore = estimateProjectedContextTokens(
-						manager.buildSessionProjection(),
-						manager.getBranch(),
-					).tokens;
-					entryId = manager.appendCompaction(
-						draft.summary,
-						draft.firstKeptEntryId,
-						tokensBefore,
-						draft.details,
-						true,
-						draft.usage,
-					);
-					break;
+					throw new Error("Extension compaction is disabled; only OpenAI native compaction is supported");
 				}
 			}
 			const entry = manager.getEntry(entryId);
@@ -2356,31 +2344,68 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
-	/** Generate Pi's built-in compaction summary for manual and automatic compaction. */
-	private async _runDefaultCompaction(
+	/** Run OpenAI Codex native compaction for manual and automatic compaction. */
+	private async _runNativeCompaction(
 		preparation: CompactionPreparation,
-		requestModel: Model<any>,
-		apiKey: string | undefined,
-		headers: Record<string, string> | undefined,
+		model: Model<any>,
 		customInstructions: string | undefined,
 		signal: AbortSignal,
-		env: Record<string, string> | undefined,
-		reason: "manual" | "threshold" | "overflow",
 	): Promise<CompactionResult> {
-		return compact(
-			preparation,
-			requestModel,
-			apiKey,
-			headers,
-			customInstructions,
-			signal,
-			this.thinkingLevel,
-			this.agent.streamFunction,
-			env,
-			this.settingsManager.getRetrySettings(),
-			this._summarizationRetryCallbacks({ source: "compaction", reason }),
-			undefined, // sessionId
+		if (customInstructions !== undefined) {
+			throw new Error("Custom compaction instructions are not supported by OpenAI native compaction");
+		}
+		if (model.provider !== "openai-codex" || model.api !== "openai-codex-responses") {
+			throw new Error("Only openai-codex models support context compaction");
+		}
+		const projected = this.sessionManager.buildSessionProjection().messages;
+		const transformed = this.agent.transformContext
+			? await this.agent.transformContext(projected, signal)
+			: projected;
+		const messages = await this.agent.convertToLlm(transformed);
+		const result = await this._modelRuntime.compact(
+			model,
+			{ messages },
+			{
+				signal,
+				sessionId: this.sessionManager.getSessionId(),
+				reasoning: this.thinkingLevel,
+				...(this.agent.onPayload ? { onPayload: this.agent.onPayload } : {}),
+				...(this.agent.onResponse ? { onResponse: this.agent.onResponse } : {}),
+			},
 		);
+		this._assertNativeCompactionHistory(result.history, model);
+		return {
+			summary: "OpenAI native compaction",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			usage: result.usage,
+			details: {
+				type: "openai.responses.compaction",
+				version: 2,
+				provider: model.provider,
+				model: model.id,
+				responseId: result.responseId,
+			},
+			replacementHistory: [result.history],
+		};
+	}
+
+	private _assertNativeCompactionHistory(history: ProviderHistoryMessage, model: Model<any>): void {
+		if (history.api !== model.api || history.provider !== model.provider || history.model !== model.id) {
+			throw new Error("OpenAI native compaction returned history for a different model");
+		}
+		const compactionItems = history.items.filter((item) => {
+			if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+			const record = item as Record<string, unknown>;
+			return (
+				record.type === "compaction" &&
+				typeof record.encrypted_content === "string" &&
+				record.encrypted_content.length > 0
+			);
+		});
+		if (compactionItems.length !== 1) {
+			throw new Error("OpenAI native compaction must return exactly one valid compaction item");
+		}
 	}
 
 	private _clearManualCompactionState(): void {
@@ -2394,20 +2419,19 @@ export class AgentSession {
 	 * This is the manual entry point used by `/compact`, RPC, and extensions. It is
 	 * separate from automatic threshold/overflow compaction, which enters through
 	 * `_checkCompaction()` and `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, both paths call the lower-level `compact()`
-	 * function imported from `./compaction/index.ts`, unless the hook cancels or
-	 * supplies a custom result.
+	 * `session_before_compact` hook, both paths call OpenAI Codex native compaction.
+	 * Extensions may cancel the operation but cannot replace the native result.
 	 *
 	 * Aborts the current agent operation first. Manual compaction never retries or
 	 * continues the interrupted agent turn.
 	 *
-	 * @param customInstructions Optional instructions for the compaction summary
+	 * @param customInstructions Unsupported for provider-native compaction
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
-		let fromExtension = false;
+		const fromExtension = false;
 		let cancelledByExtension = false;
 
 		try {
@@ -2417,13 +2441,6 @@ export class AgentSession {
 			}
 
 			const settings = this.settingsManager.getCompactionSettings(model);
-			const {
-				model: requestModel,
-				apiKey,
-				headers,
-				env,
-			} = await this._getSummarizationRequestAuth(model, this._compactionAbortController.signal);
-
 			const pathEntries = this.sessionManager.getBranch();
 
 			const preparation = prepareCompaction(pathEntries, settings);
@@ -2435,8 +2452,6 @@ export class AgentSession {
 				}
 				throw new Error("Nothing to compact (session too small)");
 			}
-
-			let extensionCompaction: CompactionResult | undefined;
 
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
 				const result = (await this._extensionRunner.emit({
@@ -2455,48 +2470,31 @@ export class AgentSession {
 				}
 
 				if (result?.compaction) {
-					extensionCompaction = result.compaction;
-					fromExtension = true;
+					throw new Error("Extension compaction is disabled; only OpenAI native compaction is supported");
 				}
 			}
 
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let usage: Usage | undefined;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				usage = extensionCompaction.usage;
-				details = extensionCompaction.details;
-			} else {
-				// Shared default summary generator, also used by automatic compaction.
-				const result = await this._runDefaultCompaction(
-					preparation,
-					requestModel,
-					apiKey,
-					headers,
-					customInstructions,
-					this._compactionAbortController.signal,
-					env,
-					"manual",
-				);
-				summary = result.summary;
-				firstKeptEntryId = result.firstKeptEntryId;
-				tokensBefore = result.tokensBefore;
-				usage = result.usage;
-				details = result.details;
-			}
+			const nativeResult = await this._runNativeCompaction(
+				preparation,
+				model,
+				customInstructions,
+				this._compactionAbortController.signal,
+			);
+			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = nativeResult;
 
 			if (this._compactionAbortController.signal.aborted) {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+				replacementHistory,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
@@ -2523,6 +2521,7 @@ export class AgentSession {
 				estimatedTokensAfter,
 				usage,
 				details,
+				replacementHistory,
 			};
 			// compaction_end listeners may submit queued prompts, so expose idle state before notifying them.
 			this._clearManualCompactionState();
@@ -2736,9 +2735,8 @@ export class AgentSession {
 
 	/**
 	 * Execute threshold or overflow compaction. Manual compaction uses
-	 * `AgentSession.compact()` instead. Both paths call the lower-level `compact()`
-	 * function imported from `./compaction/index.ts` after preparation and extension
-	 * interception.
+	 * `AgentSession.compact()` instead. Both paths use OpenAI Codex native compaction
+	 * after extensions have had a chance to cancel the operation.
 	 *
 	 * @param reason Automatic trigger selected by `_checkCompaction()`
 	 * @param willRetry Whether to continue the interrupted turn after overflow compaction
@@ -2749,7 +2747,7 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
 		let started = false;
-		let fromExtension = false;
+		const fromExtension = false;
 		let cancelledByExtension = false;
 
 		try {
@@ -2769,16 +2767,6 @@ export class AgentSession {
 			this._emit({ type: "compaction_start", reason });
 			abortController.signal.throwIfAborted();
 
-			const {
-				model: requestModel,
-				apiKey,
-				headers,
-				env,
-			} = await this._getSummarizationRequestAuth(model, abortController.signal);
-			abortController.signal.throwIfAborted();
-
-			let extensionCompaction: CompactionResult | undefined;
-
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
 				const extensionResult = (await this._extensionRunner.emit({
 					type: "session_before_compact",
@@ -2796,46 +2784,24 @@ export class AgentSession {
 				}
 
 				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
-					fromExtension = true;
+					throw new Error("Extension compaction is disabled; only OpenAI native compaction is supported");
 				}
 			}
 			abortController.signal.throwIfAborted();
 
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let usage: Usage | undefined;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				usage = extensionCompaction.usage;
-				details = extensionCompaction.details;
-			} else {
-				// Shared default summary generator, also used by manual compaction.
-				const compactResult = await this._runDefaultCompaction(
-					preparation,
-					requestModel,
-					apiKey,
-					headers,
-					undefined,
-					abortController.signal,
-					env,
-					reason,
-				);
-				summary = compactResult.summary;
-				firstKeptEntryId = compactResult.firstKeptEntryId;
-				tokensBefore = compactResult.tokensBefore;
-				usage = compactResult.usage;
-				details = compactResult.details;
-			}
+			const nativeResult = await this._runNativeCompaction(preparation, model, undefined, abortController.signal);
+			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = nativeResult;
 			abortController.signal.throwIfAborted();
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+				replacementHistory,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
@@ -2862,6 +2828,7 @@ export class AgentSession {
 				estimatedTokensAfter,
 				usage,
 				details,
+				replacementHistory,
 			};
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 

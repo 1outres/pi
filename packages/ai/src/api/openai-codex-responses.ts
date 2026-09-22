@@ -3,15 +3,19 @@ import type {
 	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
+	ResponseInputItem,
 	ResponseStreamEvent,
 } from "openai/resources/responses/responses.js";
 
-import { clampThinkingLevel } from "../models.ts";
+import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
 	AssistantMessage,
+	CompactOptions,
+	JsonValue,
 	Model,
+	ProviderCompactionResult,
 	ProviderEnv,
 	ProviderHeaders,
 	SimpleStreamOptions,
@@ -520,6 +524,50 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
 	} satisfies OpenAICodexResponsesOptions);
 };
 
+export async function compact(
+	model: Model<"openai-codex-responses">,
+	context: TranscriptContext,
+	options?: CompactOptions,
+): Promise<ProviderCompactionResult> {
+	const apiKey = options?.apiKey;
+	if (!apiKey) throw new Error(`No API key for provider: ${model.provider}`);
+
+	const accountId = extractAccountId(apiKey);
+	const codexSessionId = clampOpenAIPromptCacheKey(options?.sessionId);
+	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
+	const reasoningEffort = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const requestOptions: OpenAICodexResponsesOptions = {
+		...options,
+		...(reasoningEffort && reasoningEffort !== "off" ? { reasoningEffort } : {}),
+	};
+	let body = buildRequestBody(model, normalizedContext, requestOptions, codexSessionId);
+	body.input = [...(body.input ?? []), { type: "compaction_trigger" } as unknown as ResponseInputItem];
+	const transformedBody = await options?.onPayload?.(body, model);
+	if (transformedBody !== undefined) body = transformedBody as RequestBody;
+	assertRemoteCompactionRequest(body);
+
+	const headers = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, codexSessionId);
+	const features = (headers.get("x-codex-beta-features") ?? "")
+		.split(",")
+		.map((feature) => feature.trim())
+		.filter(Boolean);
+	if (!features.includes("remote_compaction_v2")) features.push("remote_compaction_v2");
+	headers.set("x-codex-beta-features", features.join(","));
+
+	const response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
+		method: "POST",
+		headers,
+		body: JSON.stringify(body),
+		signal: options?.signal,
+	});
+	await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+	if (!response.ok) {
+		const info = await parseErrorResponse(response);
+		throw new Error(info.friendlyMessage || info.message);
+	}
+	return parseRemoteCompactionResponse(response, body, model, options?.signal);
+}
+
 // ============================================================================
 // Request Building
 // ============================================================================
@@ -764,6 +812,117 @@ async function* mapCodexEvents(
 function normalizeCodexStatus(status: unknown): CodexResponseStatus | undefined {
 	if (typeof status !== "string") return undefined;
 	return CODEX_RESPONSE_STATUSES.has(status as CodexResponseStatus) ? (status as CodexResponseStatus) : undefined;
+}
+
+function assertRemoteCompactionRequest(value: RequestBody): asserts value is RequestBody & { input: ResponseInput } {
+	if (!Array.isArray(value.input)) {
+		throw new Error("Codex remote compaction requires a Responses request body");
+	}
+	const triggers = value.input.filter(
+		(item) => typeof item === "object" && item !== null && "type" in item && item.type === "compaction_trigger",
+	);
+	if (triggers.length !== 1 || value.input.at(-1) !== triggers[0]) {
+		throw new Error("Codex remote compaction requires one trailing compaction trigger");
+	}
+}
+
+function compactionUsage(sourceUsage: unknown, model: Model<"openai-codex-responses">): Usage {
+	if (!sourceUsage || typeof sourceUsage !== "object" || Array.isArray(sourceUsage)) {
+		throw new Error("Codex remote compaction returned invalid usage");
+	}
+	const source = sourceUsage as {
+		input_tokens?: unknown;
+		output_tokens?: unknown;
+		total_tokens?: unknown;
+		input_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
+		output_tokens_details?: { reasoning_tokens?: unknown };
+	};
+	const number = (value: unknown, name: string): number => {
+		if (value === undefined) return 0;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+			throw new Error(`Codex remote compaction returned invalid ${name}`);
+		}
+		return value;
+	};
+	const cachedTokens = number(source.input_tokens_details?.cached_tokens, "cached token usage");
+	const cacheWriteTokens = number(source.input_tokens_details?.cache_write_tokens, "cache write usage");
+	const inputTokens = number(source.input_tokens, "input token usage");
+	const usage: Usage = {
+		input: Math.max(0, inputTokens - cachedTokens - cacheWriteTokens),
+		output: number(source.output_tokens, "output token usage"),
+		cacheRead: cachedTokens,
+		cacheWrite: cacheWriteTokens,
+		reasoning: number(source.output_tokens_details?.reasoning_tokens, "reasoning token usage"),
+		totalTokens: number(source.total_tokens, "total token usage"),
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	calculateCost(model, usage);
+	return usage;
+}
+
+async function parseRemoteCompactionResponse(
+	response: Response,
+	requestBody: RequestBody & { input: ResponseInput },
+	model: Model<"openai-codex-responses">,
+	signal?: AbortSignal,
+): Promise<ProviderCompactionResult> {
+	const compactionItems: Record<string, unknown>[] = [];
+	let completed: Record<string, unknown> | undefined;
+	for await (const event of parseSSE(response, signal)) {
+		if (event.type === "error") {
+			const { code, message } = extractCodexEventError(event);
+			throw new Error(`Codex error: ${message || code || JSON.stringify(event)}`);
+		}
+		if (event.type === "response.failed") {
+			const failure = event.response as { error?: { message?: string } } | undefined;
+			throw new Error(failure?.error?.message || "Codex remote compaction failed");
+		}
+		if (event.type === "response.output_item.done") {
+			const item = event.item;
+			if (item && typeof item === "object" && !Array.isArray(item)) {
+				const record = item as Record<string, unknown>;
+				if (record.type === "compaction") compactionItems.push(record);
+			}
+		}
+		if (
+			event.type === "response.done" ||
+			event.type === "response.completed" ||
+			event.type === "response.incomplete"
+		) {
+			const responseValue = event.response;
+			if (responseValue && typeof responseValue === "object" && !Array.isArray(responseValue)) {
+				completed = responseValue as Record<string, unknown>;
+			}
+			break;
+		}
+	}
+	if (!completed || typeof completed.id !== "string" || completed.id.length === 0) {
+		throw new Error("Codex remote compaction ended without a completed response");
+	}
+	const compactionItem = compactionItems[0];
+	if (
+		compactionItems.length !== 1 ||
+		typeof compactionItem?.encrypted_content !== "string" ||
+		compactionItem.encrypted_content.length === 0
+	) {
+		throw new Error("Codex remote compaction must return exactly one valid compaction item");
+	}
+	const retained = requestBody.input.filter(
+		(item) => typeof item === "object" && item !== null && "role" in item && item.role === "user",
+	);
+	const createdAt = typeof completed.created_at === "number" ? completed.created_at * 1000 : Date.now();
+	return {
+		history: {
+			role: "providerHistory",
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			items: [...retained, compactionItem] as JsonValue[],
+			timestamp: createdAt,
+		},
+		responseId: completed.id,
+		usage: compactionUsage(completed.usage, model),
+	};
 }
 
 // ============================================================================

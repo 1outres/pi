@@ -404,7 +404,8 @@ test("newest in-range edit wins while the rendering transcript retains every edi
 	onTestFinished(() => harness.close(ctx));
 	harness.resume();
 	const root = await harness.root(ctx);
-	assert.equal((await root.context(ctx)).messages[0]?.content, "newest edit");
+	const firstMessage = (await root.context(ctx)).messages[0];
+	assert.equal(firstMessage && "content" in firstMessage ? firstMessage.content : undefined, "newest edit");
 	const watch = await root.watch(ctx);
 	assert.deepEqual(
 		watch.view.entries.map((entry) => entry.edits),
