@@ -1,5 +1,8 @@
 node_modules/
 dist/
+.direnv/
+/result
+/result-*
 .artifacts/
 *.log
 .DS_Store

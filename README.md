@@ -53,6 +53,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.m
 
 ## Development
 
+With Nix, enter the development shell before using the npm commands:
+
+```bash
+nix develop
+```
+
+The flake also builds the coding agent directly from this checkout:
+
+```bash
+nix build
+./result/bin/pi --version
+```
+
 ```bash
 npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
 npm run build         # Refresh model data, then build all packages
