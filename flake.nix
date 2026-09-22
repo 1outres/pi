@@ -30,6 +30,12 @@
           } ''
             pi --version > "$out"
           '';
+          pi-models = pkgs.runCommand "pi-models" {
+            modelData = "${self.packages.${system}.pi}/lib/pi/packages/ai/dist/providers/data/openai-codex.json";
+          } ''
+            grep -q '"gpt-6-sol"' "$modelData"
+            touch "$out"
+          '';
         });
 
       devShells = forAllSystems (system:

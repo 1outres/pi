@@ -9,6 +9,7 @@ import {
 	MODEL_DATA_SCHEMA_VERSION,
 	type ModelDataStructure,
 	readModelDataStructure,
+	refreshGeneratedModelDataManifest,
 	validateModelDataDirectory,
 } from "../scripts/model-data.ts";
 
@@ -94,6 +95,31 @@ describe("generated model data validation", () => {
 		const { dataDir, packageRoot, structure } = createFixture();
 		expect(readModelDataStructure(packageRoot)).toEqual(structure);
 		expect(() => validateModelDataDirectory(structure, dataDir)).not.toThrow();
+	});
+
+	it("refreshes the manifest after model data changes", () => {
+		const fixture = createFixture();
+		const model = fixture.values["model-a"] as Record<string, unknown>;
+		const content = `${JSON.stringify({
+			"openai-completions": {
+				...fixture.values,
+				"model-b": { ...model, id: "model-b", name: "Model B" },
+			},
+		})}\n`;
+		writeFileSync(join(fixture.dataDir, "test-provider.json"), content);
+
+		refreshGeneratedModelDataManifest(fixture.packageRoot);
+
+		const structure = readModelDataStructure(fixture.packageRoot);
+		expect(structure["test-provider"]).toEqual({
+			"model-a": "openai-completions",
+			"model-b": "openai-completions",
+		});
+		expect(() => validateModelDataDirectory(structure, fixture.dataDir)).not.toThrow();
+		const manifest = JSON.parse(readFileSync(join(fixture.dataDir, MODEL_DATA_MANIFEST_FILE), "utf8")) as {
+			generatedAt: string;
+		};
+		expect(manifest.generatedAt).toBe(GENERATED_AT);
 	});
 
 	it("rejects a missing model data directory", () => {

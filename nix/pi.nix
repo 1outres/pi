@@ -21,6 +21,8 @@ buildNpmPackage {
   postPatch = ''
     cp -r ${modelData}/dist/providers/data packages/ai/src/providers/data
     chmod -R u+w packages/ai/src/providers/data
+    cp nix/model-data/openai-codex.json packages/ai/src/providers/data/openai-codex.json
+    node packages/ai/scripts/refresh-model-data-manifest.ts
   '';
 
   installPhase = ''
