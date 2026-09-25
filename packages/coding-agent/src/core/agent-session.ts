@@ -71,6 +71,7 @@ import {
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
+	compact as summarizeCompaction,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
@@ -429,6 +430,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		if (this.model) this._assertModelSwitchAllowed(this.model);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -756,7 +758,7 @@ export class AgentSession {
 					entryId = manager.appendContextEdit(draft.targetId, draft.replacement);
 					break;
 				case "compaction": {
-					throw new Error("Extension compaction is disabled; only provider-native compaction is supported");
+					throw new Error("Extension compaction is disabled; only built-in compaction is supported");
 				}
 			}
 			const entry = manager.getEntry(entryId);
@@ -2084,6 +2086,21 @@ export class AgentSession {
 	// Model Management
 	// =========================================================================
 
+	private _assertModelSwitchAllowed(model: Model<any>): void {
+		for (const message of this.sessionManager.buildSessionProjection().messages) {
+			if (message.role !== "providerHistory") continue;
+			if (message.api === model.api && message.provider === model.provider && message.model === model.id) continue;
+			throw new Error(
+				`Native compaction history requires ${message.provider}/${message.model} via ${message.api}. ` +
+					`Start a new session to use ${model.provider}/${model.id} via ${model.api}.`,
+			);
+		}
+		const currentModel = this.model;
+		if (currentModel && (currentModel.provider === "openai-codex") !== (model.provider === "openai-codex")) {
+			throw new Error("Start a new session to switch between Codex and other providers");
+		}
+	}
+
 	private async _emitModelSelect(
 		nextModel: Model<any>,
 		previousModel: Model<any> | undefined,
@@ -2105,6 +2122,7 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>, options: ModelMutationOptions = {}): Promise<void> {
+		this._assertModelSwitchAllowed(model);
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -2175,6 +2193,7 @@ export class AgentSession {
 		const len = scopedModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
+		this._assertModelSwitchAllowed(next.model);
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
 
 		// Apply model
@@ -2211,6 +2230,7 @@ export class AgentSession {
 		const len = availableModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const nextModel = availableModels[nextIndex];
+		this._assertModelSwitchAllowed(nextModel);
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
 		this.agent.state.model = nextModel;
@@ -2413,6 +2433,38 @@ export class AgentSession {
 		}
 	}
 
+	private async _runCompaction(
+		preparation: CompactionPreparation,
+		model: Model<any>,
+		customInstructions: string | undefined,
+		signal: AbortSignal,
+		reason: "manual" | "threshold" | "overflow",
+	): Promise<CompactionResult> {
+		if (this._modelRuntime.supportsCompaction(model)) {
+			return this._runProviderCompaction(preparation, model, customInstructions, signal);
+		}
+		if (model.provider === "openai-codex") {
+			throw new Error(`Provider ${model.provider} does not support context compaction for ${model.id}`);
+		}
+		if (this.sessionManager.buildSessionProjection().messages.some((message) => message.role === "providerHistory")) {
+			throw new Error("Native compaction history cannot be replaced with a text summary");
+		}
+		const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model, signal);
+		return summarizeCompaction(
+			preparation,
+			requestModel,
+			apiKey,
+			headers,
+			customInstructions,
+			signal,
+			this.thinkingLevel,
+			this.agent.streamFunction,
+			env,
+			this.settingsManager.getRetrySettings(),
+			this._summarizationRetryCallbacks({ source: "compaction", reason }),
+		);
+	}
+
 	private _clearManualCompactionState(): void {
 		this._compactionAbortController = undefined;
 		this._resolveIdleWaitIfIdle();
@@ -2424,13 +2476,14 @@ export class AgentSession {
 	 * This is the manual entry point used by `/compact`, RPC, and extensions. It is
 	 * separate from automatic threshold/overflow compaction, which enters through
 	 * `_checkCompaction()` and `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, both paths call provider-native compaction.
-	 * Extensions may cancel the operation but cannot replace the native result.
+	 * `session_before_compact` hook, both paths use native compaction when available
+	 * and text summarization for other providers. Extensions may cancel the operation
+	 * but cannot replace the result.
 	 *
 	 * Aborts the current agent operation first. Manual compaction never retries or
 	 * continues the interrupted agent turn.
 	 *
-	 * @param customInstructions Unsupported for provider-native compaction
+	 * @param customInstructions Used by text summarization; unsupported by native compaction
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
@@ -2475,17 +2528,18 @@ export class AgentSession {
 				}
 
 				if (result?.compaction) {
-					throw new Error("Extension compaction is disabled; only provider-native compaction is supported");
+					throw new Error("Extension compaction is disabled; only built-in compaction is supported");
 				}
 			}
 
-			const nativeResult = await this._runProviderCompaction(
+			const compaction = await this._runCompaction(
 				preparation,
 				model,
 				customInstructions,
 				this._compactionAbortController.signal,
+				"manual",
 			);
-			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = nativeResult;
+			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = compaction;
 
 			if (this._compactionAbortController.signal.aborted) {
 				throw new Error("Compaction cancelled");
@@ -2592,8 +2646,8 @@ export class AgentSession {
 	 *    configured threshold; compact without retrying the completed response.
 	 *
 	 * Each case calls `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, that method calls provider-native compaction
-	 * unless the hook cancels the operation.
+	 * `session_before_compact` hook, that method uses native compaction when available
+	 * and text summarization for other providers unless the hook cancels the operation.
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -2739,7 +2793,7 @@ export class AgentSession {
 
 	/**
 	 * Execute threshold or overflow compaction. Manual compaction uses
-	 * `AgentSession.compact()` instead. Both paths use provider-native compaction
+	 * `AgentSession.compact()` instead. Both paths select the compaction method
 	 * after extensions have had a chance to cancel the operation.
 	 *
 	 * @param reason Automatic trigger selected by `_checkCompaction()`
@@ -2788,13 +2842,13 @@ export class AgentSession {
 				}
 
 				if (extensionResult?.compaction) {
-					throw new Error("Extension compaction is disabled; only provider-native compaction is supported");
+					throw new Error("Extension compaction is disabled; only built-in compaction is supported");
 				}
 			}
 			abortController.signal.throwIfAborted();
 
-			const nativeResult = await this._runProviderCompaction(preparation, model, undefined, abortController.signal);
-			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = nativeResult;
+			const compaction = await this._runCompaction(preparation, model, undefined, abortController.signal, reason);
+			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = compaction;
 			abortController.signal.throwIfAborted();
 
 			this.sessionManager.appendCompaction(
@@ -2985,6 +3039,7 @@ export class AgentSession {
 			return;
 		}
 
+		this._assertModelSwitchAllowed(refreshedModel);
 		this.agent.state.model = refreshedModel;
 	}
 

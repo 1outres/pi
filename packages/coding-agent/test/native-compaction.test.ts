@@ -195,13 +195,14 @@ describe("native-only AgentSession compaction", () => {
 	it("does not save a summary when native compaction fails", async () => {
 		const manager = SessionManager.inMemory();
 		seed(manager);
+		const summaryStream = vi.fn();
 		const runtime = {
 			supportsCompaction: vi.fn(() => true),
 			compact: vi.fn().mockRejectedValue(new Error("native endpoint unavailable")),
 			getModel: () => model,
 		} as unknown as ModelRuntime;
 		const agent = new Agent({
-			streamFn: vi.fn() as unknown as StreamFn,
+			streamFn: summaryStream as unknown as StreamFn,
 			initialState: { model, messages: manager.buildSessionContext().messages },
 			convertToLlm,
 		});
@@ -216,12 +217,13 @@ describe("native-only AgentSession compaction", () => {
 		sessions.push(session);
 
 		await expect(session.compact()).rejects.toThrow("native endpoint unavailable");
+		expect(summaryStream).not.toHaveBeenCalled();
 		expect(manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
-	it("rejects providers without native compaction and does not run summary compaction", async () => {
+	it("does not summarize Codex models without native capability", async () => {
 		const manager = SessionManager.inMemory();
-		seed(manager, portableModel);
+		seed(manager);
 		const summaryStream = vi.fn(() => {
 			throw new Error("Pi summary compaction must not run");
 		});
@@ -229,11 +231,11 @@ describe("native-only AgentSession compaction", () => {
 		const runtime = {
 			supportsCompaction: vi.fn(() => false),
 			compact,
-			getModel: () => portableModel,
+			getModel: () => model,
 		} as unknown as ModelRuntime;
 		const agent = new Agent({
 			streamFn: summaryStream as unknown as StreamFn,
-			initialState: { model: portableModel, messages: manager.buildSessionContext().messages },
+			initialState: { model, messages: manager.buildSessionContext().messages },
 			convertToLlm,
 		});
 		const session = new AgentSession({
@@ -247,7 +249,7 @@ describe("native-only AgentSession compaction", () => {
 		sessions.push(session);
 
 		await expect(session.compact()).rejects.toThrow(
-			"Provider native-test does not support context compaction for portable-model",
+			`Provider ${model.provider} does not support context compaction for ${model.id}`,
 		);
 		expect(compact).not.toHaveBeenCalled();
 		expect(summaryStream).not.toHaveBeenCalled();
@@ -320,6 +322,140 @@ describe("native-only AgentSession compaction", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+
+	it("rejects model changes that cannot replay the active native history", async () => {
+		const manager = SessionManager.inMemory();
+		const firstEntryId = seed(manager);
+		manager.appendCompaction("Provider native compaction", firstEntryId, 100, undefined, false, usage, [history]);
+		const alternatives: Model<any>[] = [
+			{ ...model, id: "another-model" },
+			{ ...model, provider: "another-provider" },
+			{ ...model, api: "another-api" },
+		];
+		const runtime = {
+			checkAuth: vi.fn(async () => true),
+			getAvailableSnapshot: () => [model, ...alternatives],
+			getModel: () => model,
+		} as unknown as ModelRuntime;
+		const agent = new Agent({
+			streamFn: vi.fn() as unknown as StreamFn,
+			initialState: { model, messages: manager.buildSessionContext().messages },
+			convertToLlm,
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory(),
+			cwd: process.cwd(),
+			modelRuntime: runtime,
+			resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+
+		for (const alternative of alternatives) {
+			const entryCount = manager.getEntries().length;
+			await expect(session.setModel(alternative, { persist: true })).rejects.toThrow(
+				"Native compaction history requires openai-codex/gpt-5.6-sol via openai-codex-responses",
+			);
+			expect(session.model).toBe(model);
+			expect(manager.getEntries()).toHaveLength(entryCount);
+			expect(session.settingsManager.getDefaultModel()).toBeUndefined();
+		}
+		await session.setModel({ ...model });
+		const selectedModel = session.model;
+
+		await expect(session.cycleModel()).rejects.toThrow("Native compaction history requires");
+		expect(session.model).toBe(selectedModel);
+		session.setScopedModels([{ model }, { model: alternatives[0] }]);
+		await expect(session.cycleModel()).rejects.toThrow("Native compaction history requires");
+		expect(session.model).toBe(selectedModel);
+	});
+
+	it("allows compatible model changes before native compaction and after leaving its branch", async () => {
+		const manager = SessionManager.inMemory();
+		const firstEntryId = seed(manager);
+		const nextModel = { ...model, id: "another-model" };
+		const runtime = {
+			checkAuth: vi.fn(async () => true),
+			getModel: () => model,
+		} as unknown as ModelRuntime;
+		const agent = new Agent({
+			streamFn: vi.fn() as unknown as StreamFn,
+			initialState: { model, messages: manager.buildSessionContext().messages },
+			convertToLlm,
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory(),
+			cwd: process.cwd(),
+			modelRuntime: runtime,
+			resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+
+		await session.setModel(nextModel);
+		expect(session.model).toBe(nextModel);
+		await session.setModel(model);
+		manager.appendCompaction("Provider native compaction", firstEntryId, 100, undefined, false, usage, [history]);
+		manager.branch(firstEntryId);
+		await session.setModel(nextModel);
+		expect(session.model).toBe(nextModel);
+	});
+
+	it("does not switch between Codex and other providers without native history", async () => {
+		for (const [current, next] of [
+			[model, portableModel],
+			[portableModel, model],
+		] as const) {
+			const manager = SessionManager.inMemory();
+			seed(manager, current);
+			const runtime = { checkAuth: vi.fn(async () => true) } as unknown as ModelRuntime;
+			const agent = new Agent({
+				streamFn: vi.fn() as unknown as StreamFn,
+				initialState: { model: current, messages: manager.buildSessionContext().messages },
+				convertToLlm,
+			});
+			const session = new AgentSession({
+				agent,
+				sessionManager: manager,
+				settingsManager: SettingsManager.inMemory(),
+				cwd: process.cwd(),
+				modelRuntime: runtime,
+				resourceLoader: createTestResourceLoader(),
+			});
+			sessions.push(session);
+
+			await expect(session.setModel(next)).rejects.toThrow(
+				"Start a new session to switch between Codex and other providers",
+			);
+			expect(session.model).toBe(current);
+		}
+	});
+
+	it("rejects an incompatible model when restoring active native history", () => {
+		const manager = SessionManager.inMemory();
+		const firstEntryId = seed(manager);
+		manager.appendCompaction("Provider native compaction", firstEntryId, 100, undefined, false, usage, [history]);
+		const otherModel = { ...model, id: "another-model" };
+		const agent = new Agent({
+			streamFn: vi.fn() as unknown as StreamFn,
+			initialState: { model: otherModel, messages: manager.buildSessionContext().messages },
+			convertToLlm,
+		});
+
+		expect(
+			() =>
+				new AgentSession({
+					agent,
+					sessionManager: manager,
+					settingsManager: SettingsManager.inMemory(),
+					cwd: process.cwd(),
+					modelRuntime: { getModel: () => otherModel } as unknown as ModelRuntime,
+					resourceLoader: createTestResourceLoader(),
+				}),
+		).toThrow("Native compaction history requires openai-codex/gpt-5.6-sol via openai-codex-responses");
 	});
 });
 

@@ -52,30 +52,30 @@ describe("AgentSession compaction model overrides", () => {
 					(pi) => {
 						pi.on("session_before_compact", (event) => {
 							preparations.push(event);
-							return {
-								compaction: {
-									summary: "compacted history",
-									firstKeptEntryId: event.preparation.firstKeptEntryId,
-									tokensBefore: event.preparation.tokensBefore,
-								},
-							};
 						});
 					},
 				],
 			});
 			harnesses.push(harness);
 			const recentUserId = seedHistory(harness, path === "pre-prompt" ? 2500 : 650);
+			const summary = fauxAssistantMessage("compacted history");
+			const turnSummary = fauxAssistantMessage("compacted turn");
 
 			if (path === "manual") {
+				harness.setResponses([summary]);
 				await harness.session.compact();
 			} else {
 				harness.setResponses(
 					path === "overflow"
 						? [
 								fauxAssistantMessage("", { stopReason: "error", errorMessage: "prompt is too long" }),
+								summary,
+								turnSummary,
 								fauxAssistantMessage("recovered"),
 							]
-						: [fauxAssistantMessage(path === "post-run" ? "z".repeat(8000) : "done")],
+						: path === "post-run"
+							? [fauxAssistantMessage("z".repeat(8000)), summary, turnSummary]
+							: [summary, fauxAssistantMessage("done")],
 				);
 				await harness.session.prompt("continue");
 			}
@@ -96,7 +96,7 @@ describe("AgentSession compaction model overrides", () => {
 			expect(harness.eventsOfType("compaction_end")[0]).toMatchObject({
 				aborted: false,
 				willRetry: path === "overflow",
-				result: { summary: "compacted history" },
+				result: { summary: expect.stringContaining("compacted history") },
 			});
 			expect(harness.getPendingResponseCount()).toBe(0);
 		},
@@ -146,21 +146,14 @@ describe("AgentSession compaction model overrides", () => {
 					modelOverrides: { "faux/big": { reserveTokens: 8000, keepRecentTokens: 150 } },
 				},
 			},
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", (event) => ({
-						compaction: {
-							summary: "big model summary",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-						},
-					}));
-				},
-			],
 		});
 		harnesses.push(harness);
 		seedHistory(harness, 2500);
-		harness.setResponses([fauxAssistantMessage("small response"), fauxAssistantMessage("big response")]);
+		harness.setResponses([
+			fauxAssistantMessage("small response"),
+			fauxAssistantMessage("big model summary"),
+			fauxAssistantMessage("big response"),
+		]);
 		await harness.session.prompt("continue on small");
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
 		// Retain usage from the small model: the next check must use the active big model's policy.
