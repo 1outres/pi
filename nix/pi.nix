@@ -18,7 +18,9 @@ buildNpmPackage {
   npmFlags = [ "--ignore-scripts" ];
   nativeBuildInputs = [ makeWrapper ];
 
-  postPatch = ''
+  # buildNpmPackage also passes postPatch to fetchNpmDeps, which has no node on
+  # PATH. So this setup runs in preBuild instead.
+  preBuild = ''
     cp -r ${modelData}/dist/providers/data packages/ai/src/providers/data
     chmod -R u+w packages/ai/src/providers/data
     cp nix/model-data/openai-codex.json packages/ai/src/providers/data/openai-codex.json
