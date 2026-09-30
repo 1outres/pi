@@ -4,7 +4,7 @@ let
   manifest = builtins.fromJSON (builtins.readFile "${src}/packages/coding-agent/package.json");
   modelData = fetchzip {
     url = "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-${manifest.version}.tgz";
-    hash = "sha256-fCpYrrIRBO5gNIEV+rziDPk4oDgRnT37w2gY90/1p0Q=";
+    hash = "sha256-iLdsOtRfQuzTYrwSPDPdZ9sWovAee0NmfDfW4HCuxLE=";
   };
 in
 buildNpmPackage {
@@ -13,7 +13,7 @@ buildNpmPackage {
   inherit src;
 
   nodejs = nodejs_24;
-  npmDepsHash = "sha256-fbxwpQHnrUihO9MU72m331Uwt9dv0fQtEjdJ9hU8UxA=";
+  npmDepsHash = "sha256-74nI8CzP7YvtdoEzswsLddQ6sZNxJiXrkYKFDaBaA9Q=";
   npmBuildScript = "build:offline";
   npmFlags = [ "--ignore-scripts" ];
   nativeBuildInputs = [ makeWrapper ];

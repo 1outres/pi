@@ -33,7 +33,8 @@
           pi-models = pkgs.runCommand "pi-models" {
             modelData = "${self.packages.${system}.pi}/lib/pi/packages/ai/dist/providers/data/openai-codex.json";
           } ''
-            grep -q '"gpt-6-sol"' "$modelData"
+            grep -q '"chat:gpt-6-sol"' "$modelData"
+            grep -q '"chat:gpt-6.1-sol"' "$modelData"
             touch "$out"
           '';
         });
