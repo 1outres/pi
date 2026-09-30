@@ -477,6 +477,14 @@ describe("OpenAI Codex model restriction", () => {
 		expect(() =>
 			runtime.registerNativeProvider({ ...openAICodex!, id: "llama.cpp", name: "llama.cpp" }),
 		).not.toThrow();
+		expect(() =>
+			runtime.registerVirtualModel({
+				provider: "anthropic",
+				id: "virtual",
+				name: "Virtual",
+				route: () => ({ model, thinkingLevel: "off" }),
+			}),
+		).not.toThrow();
 		expect(runtime.getProvider("anthropic")).toBeUndefined();
 		expect(runtime.getProvider("llama.cpp")).toBeUndefined();
 	});

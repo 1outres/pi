@@ -71,7 +71,7 @@ export function transformMessages<TApi extends Api>(
 	// Normalize null/undefined content from untyped callers (custom tools, hand-built
 	// histories, old session files) so downstream code can rely on the type contract.
 	const normalizedMessages = messages.map((msg) =>
-		"content" in msg && msg.content == null ? { ...msg, content: [] } : msg,
+		msg.role !== "providerHistory" && msg.content == null ? { ...msg, content: [] } : msg,
 	);
 	const imageAwareMessages = downgradeUnsupportedImages(normalizedMessages, model);
 
