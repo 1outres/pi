@@ -638,11 +638,12 @@ describe("NodeExecutionEnv shell", () => {
 		if (process.platform === "win32") return;
 		const root = createTempDir();
 		const shellPath = "C:\\Windows\\System32\\bash.exe";
+		const bashPath = execFileSync("bash", ["-c", 'printf %s "$BASH"'], { encoding: "utf8" }).trim();
 		const env = new NodeExecutionEnv({ cwd: root });
 		getOrThrow(
 			await env.writeFile(
 				shellPath,
-				'#!/bin/sh\nprintf \'args:%s\\n\' "$*" >&2\nexec /bin/bash "$@"\n',
+				`#!${bashPath}\nprintf 'args:%s\\n' "$*" >&2\nexec ${toBashSingleQuotedArg(bashPath)} "$@"\n`,
 				BACKGROUND_CONTEXT,
 			),
 		);
@@ -841,7 +842,8 @@ describe("NodeExecutionEnv shell", () => {
 		const root = createTempDir();
 		const pidFile = join(root, "shell.pid");
 		const controller = new AbortController();
-		const env = new NodeExecutionEnv({ cwd: root, shellPath: "/bin/bash" });
+		const bashPath = execFileSync("bash", ["-c", 'printf %s "$BASH"'], { encoding: "utf8" }).trim();
+		const env = new NodeExecutionEnv({ cwd: root, shellPath: bashPath });
 		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 		const previousSystemRoot = process.env.SystemRoot;
 		process.env.SystemRoot = "/definitely/missing/windows";
