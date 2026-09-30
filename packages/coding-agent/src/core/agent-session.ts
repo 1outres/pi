@@ -33,6 +33,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { contentText, getCurrentSystemMessage, retryDelayMs } from "@earendil-works/pi-ai";
 import type {
+	Api,
 	AssistantMessage,
 	AuthResult,
 	ImageContent,
@@ -407,6 +408,7 @@ export class AgentSession {
 	private readonly _entryIdsByMessage = new WeakMap<object, string>();
 	private readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	private _lastAssistantMessage: AssistantMessage | undefined;
+	private _boundaryModel: Model<Api> | undefined;
 	private _lastAssistantToolResults: AgentMessage[] = [];
 	private _lastActivityOutcome: AgentActivityOutcome = "completed";
 	private _isBeforeSettle = false;
@@ -531,9 +533,23 @@ export class AgentSession {
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
 
+	private async _resolveCompactionModel(
+		model: Model<Api>,
+		signal?: AbortSignal,
+	): Promise<{ model: Model<Api>; thinkingLevel: ThinkingLevel }> {
+		if (!isVirtualModel(model)) return { model, thinkingLevel: this.thinkingLevel };
+		const route = await this._modelRuntime.resolveModel(model, convertToLlm(this.messages), {
+			reason: "direct",
+			thinkingLevel: this.thinkingLevel,
+			signal,
+		});
+		return { model: route.model, thinkingLevel: route.thinkingLevel };
+	}
+
 	private async _getSummarizationRequestAuth(
 		selectedModel: Model<any>,
 		signal?: AbortSignal,
+		thinkingLevelOverride?: ThinkingLevel,
 	): Promise<{
 		model: Model<any>;
 		apiKey?: string;
@@ -548,7 +564,7 @@ export class AgentSession {
 					thinkingLevel: this.thinkingLevel,
 					signal,
 				})
-			: { model: selectedModel, thinkingLevel: this.thinkingLevel };
+			: { model: selectedModel, thinkingLevel: thinkingLevelOverride ?? this.thinkingLevel };
 		if (this.agent.streamFunction === streamSimple) {
 			return { ...(await this._getRequiredRequestAuth(model, signal)), thinkingLevel };
 		}
@@ -742,7 +758,7 @@ export class AgentSession {
 		if (!model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
 			return { ...context, messages: projection.messages };
 		}
-		await this._runAutoCompaction("threshold", false);
+		await this._runAutoCompaction("threshold", false, model);
 		return { ...context, messages: this.sessionManager.buildSessionProjection().messages };
 	}
 
@@ -797,8 +813,9 @@ export class AgentSession {
 			}
 			// The route stands: the router already decided this request. The state entry does not change
 			// the projection.
+			this._assertNativeHistoryCompatible(route.model, projection.messages);
 			if (this._exceedsCompactionThreshold(route.model, projection)) {
-				await this._runAutoCompaction("threshold", false);
+				await this._runAutoCompaction("threshold", false, route.model, route.thinkingLevel);
 				({ previous, context } = await prepare());
 			}
 			return { ...previous, context, model: route.model, thinkingLevel: route.thinkingLevel };
@@ -811,6 +828,15 @@ export class AgentSession {
 	): Promise<boolean> {
 		this._lastActivityOutcome =
 			message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" ? "error" : "completed";
+		const selectedModel = this.model;
+		const boundaryModel =
+			selectedModel &&
+			!isVirtualModel(selectedModel) &&
+			selectedModel.provider === message.provider &&
+			selectedModel.id === message.model
+				? selectedModel
+				: this._modelRuntime.getPhysicalModel(message.provider, message.model);
+		this._boundaryModel = boundaryModel;
 		const messageEntryId = this._findPersistedMessageEntryId(message);
 		if (!this._extensionRunner.hasHandlers("turn_end")) return false;
 		if (!messageEntryId) {
@@ -835,10 +861,10 @@ export class AgentSession {
 				toolResultEntryIds,
 				outcome: this._lastActivityOutcome,
 			},
-			(entries) => this._buildBoundaryContext(entries, "turn_end"),
+			(entries) => this._buildBoundaryContext(entries, "turn_end", boundaryModel),
 		);
-		this._commitBoundaryDrafts(boundary.entries);
-		if (boundary.continue && !this._buildBoundaryContext([], "turn_end").canContinue) {
+		this._commitBoundaryDrafts(boundary.entries, boundaryModel);
+		if (boundary.continue && !this._buildBoundaryContext([], "turn_end", boundaryModel).canContinue) {
 			this._reportInvalidBoundaryContinuation("turn_end");
 			return false;
 		}
@@ -905,7 +931,11 @@ export class AgentSession {
 		this.agent.state.messages = projection.messages;
 	}
 
-	private _applyBoundaryDrafts(manager: SessionManager, drafts: SessionBoundaryDraft[]): SessionEntry[] {
+	private _applyBoundaryDrafts(
+		manager: SessionManager,
+		drafts: SessionBoundaryDraft[],
+		model: Model<Api> | undefined,
+	): SessionEntry[] {
 		const appended: SessionEntry[] = [];
 		for (const draft of drafts) {
 			let entryId: string;
@@ -925,6 +955,7 @@ export class AgentSession {
 					entryId = manager.appendContextEdit(draft.targetId, draft.replacement);
 					break;
 				case "compaction": {
+					this._assertExtensionCompactionAllowed(model);
 					if (manager.buildSessionProjection().messages.some((message) => message.role === "providerHistory")) {
 						throw new Error("Native compaction history cannot be replaced with a text summary");
 					}
@@ -949,11 +980,14 @@ export class AgentSession {
 		return appended;
 	}
 
-	private _createBoundaryPreviewManager(drafts: SessionBoundaryDraft[]): SessionManager {
+	private _createBoundaryPreviewManager(
+		drafts: SessionBoundaryDraft[],
+		model: Model<Api> | undefined,
+	): SessionManager {
 		const header = this.sessionManager.getHeader();
 		if (!header) throw new Error("Session header is missing");
 		const manager = SessionManager.inMemory(this._cwd, undefined, [header, ...this.sessionManager.getBranch()]);
-		this._applyBoundaryDrafts(manager, drafts);
+		this._applyBoundaryDrafts(manager, drafts, model);
 		return manager;
 	}
 
@@ -964,8 +998,9 @@ export class AgentSession {
 	private _buildBoundaryContext(
 		drafts: SessionBoundaryDraft[],
 		boundary: "turn_end" | "agent_before_settle",
+		model: Model<Api> | undefined,
 	): BoundaryContextPreview {
-		const projection = this._createBoundaryPreviewManager(drafts).buildSessionProjection();
+		const projection = this._createBoundaryPreviewManager(drafts, model).buildSessionProjection();
 		const pendingMessages = this._getPendingBoundaryMessages();
 		const llmMessages = convertToLlm(projection.messages);
 		const finalRole = llmMessages[llmMessages.length - 1]?.role;
@@ -986,8 +1021,8 @@ export class AgentSession {
 		};
 	}
 
-	private _commitBoundaryDrafts(drafts: SessionBoundaryDraft[]): void {
-		const appended = this._applyBoundaryDrafts(this.sessionManager, drafts);
+	private _commitBoundaryDrafts(drafts: SessionBoundaryDraft[], model: Model<Api> | undefined): void {
+		const appended = this._applyBoundaryDrafts(this.sessionManager, drafts, model);
 		this._refreshFinalizedContext();
 		for (const entry of appended) this._emit({ type: "entry_appended", entry });
 	}
@@ -1749,6 +1784,7 @@ export class AgentSession {
 		this._failedResponse = undefined;
 		this._recordSelection();
 		this._isAgentRunActive = true;
+		this._boundaryModel = undefined;
 		try {
 			await this.agent.prompt(messages);
 			while (!this._agentRunAbortRequested) {
@@ -1816,13 +1852,14 @@ export class AgentSession {
 		this._isBeforeSettle = true;
 		this._abortDuringBeforeSettle = false;
 		try {
+			const model = this._boundaryModel;
 			const result = await this._extensionRunner.emitBoundary(
 				{ type: "agent_before_settle", outcome: this._lastActivityOutcome },
-				(entries) => this._buildBoundaryContext(entries, "agent_before_settle"),
+				(entries) => this._buildBoundaryContext(entries, "agent_before_settle", model),
 			);
-			this._commitBoundaryDrafts(result.entries);
+			this._commitBoundaryDrafts(result.entries, model);
 			this._flushPendingCustomMessages();
-			const finalContext = this._buildBoundaryContext([], "agent_before_settle");
+			const finalContext = this._buildBoundaryContext([], "agent_before_settle", model);
 			if (this._abortDuringBeforeSettle) return false;
 			const shouldContinue = result.continue || this.agent.hasQueuedMessages();
 			if (shouldContinue && !finalContext.canContinue) {
@@ -2375,8 +2412,11 @@ export class AgentSession {
 	// Model Management
 	// =========================================================================
 
-	private _assertModelSwitchAllowed(model: Model<any>): void {
-		for (const message of this.sessionManager.buildSessionProjection().messages) {
+	private _assertNativeHistoryCompatible(
+		model: Model<Api>,
+		messages: AgentMessage[] = this.sessionManager.buildSessionProjection().messages,
+	): void {
+		for (const message of messages) {
 			if (message.role !== "providerHistory") continue;
 			if (message.api === model.api && message.provider === model.provider && message.model === model.id) continue;
 			throw new Error(
@@ -2384,6 +2424,10 @@ export class AgentSession {
 					`Start a new session to use ${model.provider}/${model.id} via ${model.api}.`,
 			);
 		}
+	}
+
+	private _assertModelSwitchAllowed(model: Model<any>): void {
+		if (!isVirtualModel(model)) this._assertNativeHistoryCompatible(model);
 		const currentModel = this.model;
 		if (currentModel && (currentModel.provider === "openai-codex") !== (model.provider === "openai-codex")) {
 			throw new Error("Start a new session to switch between Codex and other providers");
@@ -2654,12 +2698,20 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private _assertExtensionCompactionAllowed(model: Model<Api> | undefined): void {
+		if (!model) throw new Error("Extension compaction requires a physical model");
+		if (this._modelRuntime.supportsCompaction(model) || model.provider === "openai-codex") {
+			throw new Error("Extension compaction cannot replace provider-native compaction");
+		}
+	}
+
 	/** Run provider-native compaction for manual and automatic compaction. */
 	private async _runProviderCompaction(
 		preparation: CompactionPreparation,
 		model: Model<any>,
 		customInstructions: string | undefined,
 		signal: AbortSignal,
+		thinkingLevel: ThinkingLevel,
 	): Promise<CompactionResult> {
 		if (customInstructions !== undefined) {
 			throw new Error("Custom compaction instructions are not supported by provider-native compaction");
@@ -2678,7 +2730,7 @@ export class AgentSession {
 			{
 				signal,
 				sessionId: this.sessionManager.getSessionId(),
-				reasoning: this.thinkingLevel,
+				reasoning: thinkingLevel,
 				...(this.agent.onPayload ? { onPayload: this.agent.onPayload } : {}),
 				...(this.agent.onResponse ? { onResponse: this.agent.onResponse } : {}),
 			},
@@ -2728,9 +2780,10 @@ export class AgentSession {
 		customInstructions: string | undefined,
 		signal: AbortSignal,
 		reason: "manual" | "threshold" | "overflow",
+		thinkingLevel: ThinkingLevel,
 	): Promise<CompactionResult> {
 		if (this._modelRuntime.supportsCompaction(model)) {
-			return this._runProviderCompaction(preparation, model, customInstructions, signal);
+			return this._runProviderCompaction(preparation, model, customInstructions, signal, thinkingLevel);
 		}
 		if (model.provider === "openai-codex") {
 			throw new Error(`Provider ${model.provider} does not support context compaction for ${model.id}`);
@@ -2738,7 +2791,7 @@ export class AgentSession {
 		if (this.sessionManager.buildSessionProjection().messages.some((message) => message.role === "providerHistory")) {
 			throw new Error("Native compaction history cannot be replaced with a text summary");
 		}
-		const request = await this._getSummarizationRequestAuth(model, signal);
+		const request = await this._getSummarizationRequestAuth(model, signal, thinkingLevel);
 		return summarizeCompaction(
 			preparation,
 			request.model,
@@ -2774,8 +2827,8 @@ export class AgentSession {
 	 * This is the manual entry point used by `/compact`, RPC, and extensions. It is
 	 * separate from automatic threshold/overflow compaction, which enters through
 	 * `_checkCompaction()` and `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, both paths accept an extension result or use native
-	 * compaction when available and text summarization for other providers.
+	 * `session_before_compact` hook, both paths use native compaction when available;
+	 * extensions may supply results only for text compaction.
 	 *
 	 * Aborts the current agent operation first. Manual compaction never retries or
 	 * continues the interrupted agent turn.
@@ -2790,12 +2843,17 @@ export class AgentSession {
 		let cancelledByExtension = false;
 
 		try {
-			const model = this.model;
-			if (!model) {
+			const selectedModel = this.model;
+			if (!selectedModel) {
 				throw new Error(formatNoModelSelectedMessage());
 			}
+			const { model, thinkingLevel } = await this._resolveCompactionModel(
+				selectedModel,
+				this._compactionAbortController.signal,
+			);
+			this._assertNativeHistoryCompatible(model);
 
-			const settings = this.settingsManager.getCompactionSettings(model);
+			const settings = this.settingsManager.getCompactionSettings(selectedModel);
 			const pathEntries = this.sessionManager.getBranch();
 
 			const preparation = prepareCompaction(pathEntries, settings);
@@ -2826,8 +2884,9 @@ export class AgentSession {
 				}
 
 				if (result?.compaction) {
-					extensionCompaction = result.compaction;
 					fromExtension = true;
+					this._assertExtensionCompactionAllowed(model);
+					extensionCompaction = result.compaction;
 				}
 			}
 
@@ -2839,6 +2898,7 @@ export class AgentSession {
 					customInstructions,
 					this._compactionAbortController.signal,
 					"manual",
+					thinkingLevel,
 				));
 			this._assertCompactionHistoryPreserved(compaction);
 			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = compaction;
@@ -2948,8 +3008,8 @@ export class AgentSession {
 	 *    configured threshold; compact without retrying the completed response.
 	 *
 	 * Each case calls `_runAutoCompaction()`. After preparation and the
-	 * `session_before_compact` hook, that method accepts an extension result or uses
-	 * native compaction when available and text summarization for other providers.
+	 * `session_before_compact` hook, that method uses native compaction when available;
+	 * extensions may supply results only for text compaction.
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -2973,7 +3033,8 @@ export class AgentSession {
 		// physical model that produced the message supplies the limits.
 		const messageModel = this._modelForMessage(assistantMessage);
 		const sameModel = messageModel !== undefined;
-		const contextWindow = (messageModel ?? this.model)?.contextWindow ?? 0;
+		const thresholdModel = messageModel ?? (this.model && !isVirtualModel(this.model) ? this.model : undefined);
+		const contextWindow = thresholdModel?.contextWindow ?? 0;
 
 		// Skip compaction checks if this assistant message is older than the latest
 		// compaction boundary. This prevents a stale pre-compaction usage/error
@@ -3024,7 +3085,7 @@ export class AgentSession {
 			// Case 2: the response completed successfully. Compact, but do not retry because
 			// agent.continue() cannot continue from a completed assistant response.
 			if (!willRetry) {
-				return await this._runAutoCompaction("overflow", false);
+				return await this._runAutoCompaction("overflow", false, messageModel, assistantMessage.thinkingLevel);
 			}
 
 			if (this._overflowRecoveryAttempted) {
@@ -3052,7 +3113,12 @@ export class AgentSession {
 			// Persistently omit the selected final attempt before post-run recovery compaction.
 			this._overflowRecoveryAttempted = true;
 			this._omitRecoveryAttempt(assistantMessage, toolResults);
-			const retry = await this._runAutoCompaction("overflow", willRetry);
+			const retry = await this._runAutoCompaction(
+				"overflow",
+				willRetry,
+				messageModel,
+				assistantMessage.thinkingLevel,
+			);
 			if (retry) this._failedResponse = assistantMessage;
 			return retry;
 		}
@@ -3089,34 +3155,41 @@ export class AgentSession {
 		} else {
 			contextTokens = directContextTokens;
 		}
-		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			return await this._runAutoCompaction("threshold", false);
+		if (thresholdModel && shouldCompact(contextTokens, contextWindow, settings)) {
+			return await this._runAutoCompaction(
+				"threshold",
+				false,
+				thresholdModel,
+				sameModel ? assistantMessage.thinkingLevel : this.thinkingLevel,
+			);
 		}
 		return false;
 	}
 
 	/**
 	 * Execute threshold or overflow compaction. Manual compaction uses
-	 * `AgentSession.compact()` instead. Both paths accept extension compaction results
-	 * or select the built-in method after the extension hook.
+	 * `AgentSession.compact()` instead. Both paths allow extension compaction only for
+	 * text models and select the built-in method after the extension hook otherwise.
 	 *
 	 * @param reason Automatic trigger selected by `_checkCompaction()`
 	 * @param willRetry Whether to continue the interrupted turn after overflow compaction
 	 * @returns Whether the post-run loop should call `agent.continue()`
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
-		const model = this.model;
-		const settings = this.settingsManager.getCompactionSettings(model);
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		model?: Model<Api>,
+		thinkingLevel?: ThinkingLevel,
+	): Promise<boolean> {
+		const settings = this.settingsManager.getCompactionSettings(this.model);
 		let abortController: AbortController | undefined;
 		let started = false;
 		let fromExtension = false;
 		let cancelledByExtension = false;
 
 		try {
-			if (!model) {
-				return false;
-			}
-
+			const selectedModel = model ?? this.model;
+			if (!selectedModel) return false;
 			const pathEntries = this.sessionManager.getBranch();
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
@@ -3127,6 +3200,10 @@ export class AgentSession {
 			this._autoCompactionAbortController = abortController;
 			started = true;
 			this._emit({ type: "compaction_start", reason });
+			abortController.signal.throwIfAborted();
+			const physical = await this._resolveCompactionModel(selectedModel, abortController.signal);
+			const physicalModel = physical.model;
+			this._assertNativeHistoryCompatible(physicalModel);
 			abortController.signal.throwIfAborted();
 
 			let extensionCompaction: CompactionResult | undefined;
@@ -3147,15 +3224,23 @@ export class AgentSession {
 				}
 
 				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
 					fromExtension = true;
+					this._assertExtensionCompactionAllowed(physicalModel);
+					extensionCompaction = extensionResult.compaction;
 				}
 			}
 			abortController.signal.throwIfAborted();
 
 			const compaction =
 				extensionCompaction ??
-				(await this._runCompaction(preparation, model, undefined, abortController.signal, reason));
+				(await this._runCompaction(
+					preparation,
+					physicalModel,
+					undefined,
+					abortController.signal,
+					reason,
+					thinkingLevel ?? physical.thinkingLevel,
+				));
 			this._assertCompactionHistoryPreserved(compaction);
 			const { summary, firstKeptEntryId, tokensBefore, usage, details, replacementHistory } = compaction;
 			abortController.signal.throwIfAborted();

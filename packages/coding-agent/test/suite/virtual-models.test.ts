@@ -343,12 +343,8 @@ describe("AgentSession virtual models", () => {
 		expect(stored()).toHaveLength(2);
 	});
 
-	it("does not route compactions that an extension supplies", async () => {
-		const route: Route = (request, ctx) => {
-			if (request.reason === "direct") throw new Error("router unavailable");
-			return defaultRoute(request, ctx);
-		};
-		const { harness, reasons } = await createRoutedHarness(route, {
+	it("routes before accepting extension compaction for a text model", async () => {
+		const { harness, reasons } = await createRoutedHarness(defaultRoute, {
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
 				(pi) => {
@@ -365,7 +361,40 @@ describe("AgentSession virtual models", () => {
 		const result = await harness.session.compact();
 
 		expect(result.summary).toBe("extension summary");
-		expect(reasons()).toEqual(["user", "user"]);
+		expect(reasons()).toEqual(["user", "user", "direct"]);
+	});
+
+	it("rejects extension compaction when its physical model cannot be resolved", async () => {
+		const hook = vi.fn();
+		const route: Route = (request, ctx) => {
+			if (request.reason === "direct") throw new Error("router unavailable");
+			return defaultRoute(request, ctx);
+		};
+		const { harness, reasons } = await createRoutedHarness(route, {
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", ({ preparation }) => {
+						hook();
+						return {
+							compaction: {
+								summary: "extension summary",
+								firstKeptEntryId: preparation.firstKeptEntryId,
+								tokensBefore: preparation.tokensBefore,
+							},
+						};
+					});
+				},
+			],
+		});
+		harness.setResponses([fauxAssistantMessage("first answer")]);
+		await harness.session.prompt("first");
+
+		await expect(harness.session.compact()).rejects.toThrow("router unavailable");
+
+		expect(hook).not.toHaveBeenCalled();
+		expect(reasons()).toEqual(["user", "direct"]);
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toEqual([]);
 	});
 
 	it("routes compaction summaries before sizing them", async () => {
