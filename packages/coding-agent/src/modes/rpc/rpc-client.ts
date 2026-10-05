@@ -415,10 +415,14 @@ export class RpcClient {
 
 	/**
 	 * Get session entries in append order, optionally only those after the `since` entry id.
+	 * With `maxBytes`, returns one page and sets `hasMore` when entries remain after it.
 	 */
-	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
-		const response = await this.send({ type: "get_entries", since });
-		return this.getData<{ entries: SessionEntry[]; leafId: string | null }>(response);
+	async getEntries(
+		since?: string,
+		maxBytes?: number,
+	): Promise<{ entries: SessionEntry[]; leafId: string | null; hasMore: boolean }> {
+		const response = await this.send({ type: "get_entries", since, maxBytes });
+		return this.getData<{ entries: SessionEntry[]; leafId: string | null; hasMore: boolean }>(response);
 	}
 
 	/**

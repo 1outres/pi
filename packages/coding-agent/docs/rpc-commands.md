@@ -699,6 +699,11 @@ With a cursor:
 {"type": "get_entries", "since": "abc123"}
 ```
 
+In pages:
+```json
+{"type": "get_entries", "since": "abc123", "maxBytes": 4194304}
+```
+
 Response:
 ```json
 {
@@ -709,12 +714,15 @@ Response:
     "entries": [
       {"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "...", "message": {"role": "user", "...": "..."}}
     ],
-    "leafId": "def456"
+    "leafId": "def456",
+    "hasMore": false
   }
 }
 ```
 
 `leafId` is the id of the current leaf entry (`null` for an empty session), so a client can tell in one round trip whether the active branch moved. If `since` does not match any entry id, the response is `success: false`.
+
+Use `maxBytes` when the session may be too large for one response. Entries are returned in append order while the total JSON size of the returned entries stays within `maxBytes`. The size does not include the response envelope, so leave room for it. `hasMore` is `true` when more entries follow; pass the id of the last returned entry as `since` to get the next page. Without `maxBytes`, every entry is returned and `hasMore` is `false`. If `maxBytes` is not a positive integer, or the next entry alone is larger than `maxBytes`, the response is `success: false`.
 
 ### get_tree
 

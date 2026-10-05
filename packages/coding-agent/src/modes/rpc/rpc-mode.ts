@@ -28,6 +28,7 @@ import {
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
+import { takeEntryPage } from "./entry-pages.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
@@ -643,7 +644,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					}
 					entries = entries.slice(sinceIndex + 1);
 				}
-				return success(id, "get_entries", { entries, leafId: sessionManager.getLeafId() });
+				const page = takeEntryPage(entries, command.maxBytes);
+				return success(id, "get_entries", { ...page, leafId: sessionManager.getLeafId() });
 			}
 
 			case "get_tree": {
