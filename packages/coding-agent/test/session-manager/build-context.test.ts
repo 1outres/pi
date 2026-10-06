@@ -6,6 +6,7 @@ import {
 	type CompactionEntry,
 	type CustomEntry,
 	type ModelChangeEntry,
+	type ServiceTierChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
@@ -66,6 +67,14 @@ function modelChange(id: string, parentId: string | null, provider: string, mode
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
 }
 
+function serviceTierChange(
+	id: string,
+	parentId: string | null,
+	serviceTier: ServiceTierChangeEntry["serviceTier"],
+): ServiceTierChangeEntry {
+	return { type: "service_tier_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", serviceTier };
+}
+
 describe("buildSessionContext", () => {
 	describe("trivial cases", () => {
 		it("empty entries returns empty context", () => {
@@ -73,6 +82,7 @@ describe("buildSessionContext", () => {
 			expect(ctx.messages).toEqual([]);
 			expect(ctx.thinkingLevel).toBe("off");
 			expect(ctx.model).toBeNull();
+			expect(ctx.serviceTier).toBeUndefined();
 		});
 
 		it("single user message", () => {
@@ -103,6 +113,21 @@ describe("buildSessionContext", () => {
 			const ctx = buildSessionContext(entries);
 			expect(ctx.thinkingLevel).toBe("high");
 			expect(ctx.messages).toHaveLength(2);
+		});
+
+		it("tracks service tier changes: the last change wins and null clears it", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				serviceTierChange("2", "1", "priority"),
+				msg("3", "2", "assistant", "fast"),
+				serviceTierChange("4", "3", "flex"),
+				serviceTierChange("5", "4", null),
+			];
+
+			expect(buildSessionContext(entries, "3").serviceTier).toBe("priority");
+			expect(buildSessionContext(entries, "4").serviceTier).toBe("flex");
+			expect(buildSessionContext(entries, "5").serviceTier).toBeUndefined();
+			expect(buildSessionContext(entries, "5").messages).toHaveLength(2);
 		});
 
 		it("tracks model from assistant message", () => {
@@ -206,6 +231,18 @@ describe("buildSessionContext", () => {
 			expect(ctx.thinkingLevel).toBe("high");
 			expect(ctx.messages.map((message) => message.role)).toEqual(["compactionSummary", "user"]);
 		});
+
+		it("keeps the service tier from the full path after compaction", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				serviceTierChange("2", "1", "priority"),
+				msg("3", "2", "assistant", "response1"),
+				msg("4", "3", "user", "second"),
+				compaction("5", "4", "Summary", "4"),
+			];
+
+			expect(buildSessionContext(entries).serviceTier).toBe("priority");
+		});
 	});
 
 	describe("with branches", () => {
@@ -227,6 +264,18 @@ describe("buildSessionContext", () => {
 			const ctxB = buildSessionContext(entries, "4");
 			expect(ctxB.messages).toHaveLength(3);
 			expect((ctxB.messages[2] as any).content).toBe("branch B");
+		});
+
+		it("restores the service tier of the selected branch only", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "start"),
+				serviceTierChange("2", "1", "priority"),
+				msg("3", "2", "assistant", "branch A"),
+				msg("4", "1", "assistant", "branch B"),
+			];
+
+			expect(buildSessionContext(entries, "3").serviceTier).toBe("priority");
+			expect(buildSessionContext(entries, "4").serviceTier).toBeUndefined();
 		});
 
 		it("includes branch summary in path", () => {

@@ -433,6 +433,8 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.getServiceTier = actions.getServiceTier;
+		this.runtime.setServiceTier = actions.setServiceTier;
 		this.runtime.createContext = () => this.createContext();
 
 		// Context actions (required)

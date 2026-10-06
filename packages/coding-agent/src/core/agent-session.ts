@@ -41,6 +41,7 @@ import type {
 	ProviderCompactionResult,
 	ProviderHeaders,
 	ProviderHistoryMessage,
+	ServiceTier,
 	SystemMessage,
 	TextContent,
 	ToolResultMessage,
@@ -122,6 +123,7 @@ import type { ModelRuntime } from "./model-runtime.ts";
 import { NestedToolCallRunner } from "./nested-tool-calls.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import { assertServiceTierSupported, modelOffersServiceTier } from "./service-tier.ts";
 import { exportSessionToJsonl } from "./session-export.ts";
 import {
 	type BranchSummaryEntry,
@@ -207,6 +209,7 @@ export type AgentSessionEvent =
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "service_tier_changed"; serviceTier: ServiceTier | undefined }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -781,6 +784,7 @@ export class AgentSession {
 						context: canonicalContext,
 						model: this.agent.state.model,
 						thinkingLevel: this.agent.state.thinkingLevel,
+						serviceTier: this.agent.state.serviceTier,
 					},
 					signal,
 				);
@@ -789,7 +793,9 @@ export class AgentSession {
 			let { previous, context, projection } = await prepare();
 			const model = previous?.model ?? this.agent.state.model;
 			const thinkingLevel = previous?.thinkingLevel ?? this.agent.state.thinkingLevel;
-			if (!isVirtualModel(model)) return { ...previous, context, model, thinkingLevel };
+			const serviceTier =
+				previous?.serviceTier !== undefined ? previous.serviceTier : (this.agent.state.serviceTier ?? null);
+			if (!isVirtualModel(model)) return { ...previous, context, model, thinkingLevel, serviceTier };
 
 			// The selection stays in agent state; only this request uses the routed model. A routing
 			// failure rejects, which ends the run with an error response. Only messages the user wrote
@@ -818,7 +824,7 @@ export class AgentSession {
 				await this._runAutoCompaction("threshold", false, route.model, route.thinkingLevel);
 				({ previous, context } = await prepare());
 			}
-			return { ...previous, context, model: route.model, thinkingLevel: route.thinkingLevel };
+			return { ...previous, context, model: route.model, thinkingLevel: route.thinkingLevel, serviceTier };
 		};
 	}
 
@@ -915,6 +921,7 @@ export class AgentSession {
 					: previousSnapshot?.messages,
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
+				serviceTier: this.agent.state.serviceTier ?? null,
 			};
 		};
 	}
@@ -1444,6 +1451,11 @@ export class AgentSession {
 	/** Current thinking level */
 	get thinkingLevel(): ThinkingLevel {
 		return this.agent.state.thinkingLevel;
+	}
+
+	/** Current service tier. Undefined means requests use the provider default. */
+	get serviceTier(): ServiceTier | undefined {
+		return this.agent.state.serviceTier;
 	}
 
 	/** Under a virtual selection, the physical model and thinking level of the latest successful response. */
@@ -2473,6 +2485,7 @@ export class AgentSession {
 		// Per-model thinking level overrides take priority over the global default.
 		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
+		this._clearUnsupportedServiceTier();
 
 		await this._emitModelSelect(model, previousModel, "set");
 	}
@@ -2543,6 +2556,7 @@ export class AgentSession {
 		// setThinkingLevel clamps to model capabilities.
 		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
+		this._clearUnsupportedServiceTier();
 
 		await this._emitModelSelect(next.model, currentModel, "cycle");
 
@@ -2576,6 +2590,7 @@ export class AgentSession {
 		// Apply thinking level for the new model.
 		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
+		this._clearUnsupportedServiceTier();
 
 		await this._emitModelSelect(nextModel, currentModel, "cycle");
 
@@ -2665,6 +2680,34 @@ export class AgentSession {
 
 	private _clampThinkingLevel(level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
+	}
+
+	// =========================================================================
+	// Service Tier Management
+	// =========================================================================
+
+	/**
+	 * Set the service tier for future requests. Undefined clears it so requests use the provider default.
+	 * Saves the tier to the session transcript only if it actually changes.
+	 * @throws Error if `tier` is not a service tier or the current model does not support service tiers
+	 */
+	setServiceTier(tier: ServiceTier | undefined): void {
+		if (tier !== undefined) assertServiceTierSupported(this.model, tier);
+		this._applyServiceTier(tier);
+	}
+
+	private _clearUnsupportedServiceTier(): void {
+		const model = this.model;
+		if (this.serviceTier !== undefined && !modelOffersServiceTier(model, this.serviceTier)) {
+			this._applyServiceTier(undefined);
+		}
+	}
+
+	private _applyServiceTier(tier: ServiceTier | undefined): void {
+		if (tier === this.agent.state.serviceTier) return;
+		this.agent.state.serviceTier = tier;
+		this.sessionManager.appendServiceTierChange(tier ?? null);
+		this._emit({ type: "service_tier_changed", serviceTier: tier });
 	}
 
 	// =========================================================================
@@ -3436,6 +3479,7 @@ export class AgentSession {
 
 		this._assertModelSwitchAllowed(refreshedModel);
 		this.agent.state.model = refreshedModel;
+		this._clearUnsupportedServiceTier();
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {
@@ -3513,6 +3557,8 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				getServiceTier: () => this.serviceTier,
+				setServiceTier: (tier) => this.setServiceTier(tier),
 			},
 			{
 				getModel: () => this.model,

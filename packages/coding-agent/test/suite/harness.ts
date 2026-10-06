@@ -109,6 +109,7 @@ export function createTestUiContext(overrides: Partial<ExtensionUIContext> = {})
 }
 
 export interface HarnessOptions {
+	api?: string;
 	models?: FauxModelDefinition[];
 	settings?: Partial<Settings>;
 	tools?: AgentTool[];
@@ -148,6 +149,7 @@ function createTempDir(): string {
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const tempDir = createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
+		api: options.api,
 		models: options.models,
 	});
 	fauxProvider.setResponses([]);
@@ -180,6 +182,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 				reasoning: registeredModel.reasoning,
 				input: registeredModel.input,
 				inputLimits: registeredModel.inputLimits,
+				serviceTiers: registeredModel.serviceTiers,
 				cost: registeredModel.cost,
 				contextWindow: registeredModel.contextWindow,
 				maxTokens: registeredModel.maxTokens,

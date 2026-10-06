@@ -1,6 +1,7 @@
 /** Immutable, credential-blind models.json snapshot. */
 
 import { readFile } from "node:fs/promises";
+import { SERVICE_TIERS } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -140,6 +141,11 @@ const ModelPromptCacheSchema = Type.Object({
 	short: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 	long: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 });
+const ModelServiceTierSchema = Type.Object({
+	id: Type.Union(SERVICE_TIERS.map((tier) => Type.Literal(tier))),
+	name: Type.String({ minLength: 1 }),
+	description: Type.String(),
+});
 const ImageResizeSchema = Type.Object({
 	maxWidth: Type.Optional(Type.Integer({ minimum: 1 })),
 	maxHeight: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -196,6 +202,7 @@ const ModelDefinitionSchema = Type.Object({
 	inputLimits: Type.Optional(ModelInputLimitsSchema),
 	cost: Type.Optional(ModelCostSchema),
 	promptCache: Type.Optional(ModelPromptCacheSchema),
+	serviceTiers: Type.Optional(Type.Array(ModelServiceTierSchema)),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
 	samplingParams: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
@@ -219,6 +226,7 @@ const ModelOverrideSchema = Type.Object({
 		}),
 	),
 	promptCache: Type.Optional(ModelPromptCacheSchema),
+	serviceTiers: Type.Optional(Type.Array(ModelServiceTierSchema)),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
 	samplingParams: Type.Optional(Type.Record(Type.String(), Type.Unknown())),

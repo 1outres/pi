@@ -6,7 +6,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { ImageContent, ServiceTier } from "@earendil-works/pi-ai";
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -302,6 +302,14 @@ export class RpcClient {
 	async getAvailableThinkingLevels(): Promise<ThinkingLevel[]> {
 		const response = await this.send({ type: "get_available_thinking_levels" });
 		return this.getData<{ levels: ThinkingLevel[] }>(response).levels;
+	}
+
+	/**
+	 * Set the service tier. Null clears it so requests use the provider default.
+	 * Rejects when the current model does not support service tiers.
+	 */
+	async setServiceTier(serviceTier: ServiceTier | null): Promise<void> {
+		this.assertSuccess(await this.send({ type: "set_service_tier", serviceTier }));
 	}
 
 	/**
@@ -608,11 +616,15 @@ export class RpcClient {
 		});
 	}
 
-	private getData<T>(response: RpcResponse): T {
+	private assertSuccess(response: RpcResponse): void {
 		if (!response.success) {
 			const errorResponse = response as Extract<RpcResponse, { success: false }>;
 			throw new Error(errorResponse.error);
 		}
+	}
+
+	private getData<T>(response: RpcResponse): T {
+		this.assertSuccess(response);
 		// Type assertion: we trust response.data matches T based on the command sent.
 		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;

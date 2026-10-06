@@ -82,6 +82,19 @@ export type KnownProvider =
 export type ProviderId = KnownProvider | string;
 
 export type ToolChoice = "auto" | "none";
+/**
+ * Processing tier requested from OpenAI Responses `service_tier`. Codex Fast mode is `"priority"`.
+ * Use `getSupportedServiceTiers()` to list the tiers a model accepts.
+ */
+export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority";
+
+/** A service tier that a model offers, as listed in the provider's model catalog. */
+export interface ModelServiceTier {
+	id: ServiceTier;
+	/** Short label for UIs, such as `"Fast"`. */
+	name: string;
+	description: string;
+}
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
@@ -352,6 +365,12 @@ export interface SimpleStreamOptions extends StreamOptions {
 	/** Provider-neutral tool selection for simple requests. When omitted, adapters use provider-specific behavior. */
 	toolChoice?: ToolChoice;
 	reasoning?: ThinkingLevel;
+	/**
+	 * Processing tier. The OpenAI Responses and Codex Responses adapters send it as `service_tier`;
+	 * other adapters ignore it. Set it only when `supportsServiceTier(model)` is true.
+	 * Undefined uses the provider default.
+	 */
+	serviceTier?: ServiceTier;
 	/** Ask a capable provider to return a durable handle and continue the request asynchronously. */
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
 	/** Custom token budgets for thinking levels (token-based providers only) */
@@ -1144,6 +1163,8 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 	thinkingLevelMap?: ThinkingLevelMap;
 	/** Prompt cache lifetimes per retention tier. Unset when the provider's cache behavior is unknown. */
 	promptCache?: ModelPromptCache;
+	/** Service tiers that a Codex model offers. Unset when it offers none. */
+	serviceTiers?: ModelServiceTier[];
 	contextWindow: number;
 	maxTokens: number;
 	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */

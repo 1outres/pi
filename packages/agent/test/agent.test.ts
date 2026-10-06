@@ -4,6 +4,7 @@ import {
 	EventStream,
 	getCurrentSystemMessage,
 	getModel,
+	type ServiceTier,
 	toToolDeclaration,
 	type UserMessage,
 } from "@earendil-works/pi-ai/compat";
@@ -131,6 +132,7 @@ describe("Agent", () => {
 		expect(agent.state).toBeDefined();
 		expect(agent.state.model).toBeDefined();
 		expect(agent.state.thinkingLevel).toBe("off");
+		expect(agent.state.serviceTier).toBeUndefined();
 		expect(agent.state.tools).toEqual([]);
 		expect(agent.state.messages).toEqual([]);
 		expect(agent.state.isStreaming).toBe(false);
@@ -1186,6 +1188,28 @@ describe("Agent", () => {
 		await agent.prompt("hello");
 
 		expect(providerEvents).toEqual([{ request_cost: 0.01 }]);
+	});
+
+	it("forwards the service tier from state to streamFunction options", async () => {
+		const receivedTiers: Array<ServiceTier | undefined> = [];
+		const agent = new Agent({
+			initialState: { serviceTier: "priority" },
+			streamFn: (_model, _context, options) => {
+				receivedTiers.push(options?.serviceTier);
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message = createAssistantMessage("ok");
+					stream.push({ type: "done", reason: "stop", message });
+				});
+				return stream;
+			},
+		});
+
+		await agent.prompt("hello");
+		agent.state.serviceTier = undefined;
+		await agent.prompt("hello again");
+
+		expect(receivedTiers).toEqual(["priority", undefined]);
 	});
 
 	it("forwards sessionId to streamFunction options", async () => {

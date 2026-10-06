@@ -27,7 +27,9 @@ The [complete minimal example](../examples/sdk/01-minimal.ts) also streams text 
 
 `createAgentSession()` creates an `AgentSession`. The session owns one conversation, its model and tools, queued messages, compaction state, and extension runtime.
 
-Read current state through `session.messages`, `session.model`, `session.thinkingLevel`, `session.systemPrompt`, and `session.getActiveToolNames()`.
+Read current state through `session.messages`, `session.model`, `session.thinkingLevel`, `session.serviceTier`, `session.systemPrompt`, and `session.getActiveToolNames()`.
+
+`session.setServiceTier(tier)` sets the OpenAI service tier for later requests (`"priority"` is Codex Fast mode); `undefined` clears it. It throws when the current model does not offer that tier (see `getSupportedServiceTiers()` from `@earendil-works/pi-ai`). The tier is recorded in the session, and switching to a model that does not offer it clears it.
 
 `session.systemPrompt` is read-only and returns the current effective system prompt, including changes that have not yet been sent to the model. Tool changes are declared to the model before the next request.
 
@@ -99,7 +101,7 @@ Without overrides, the factory creates a `ModelRuntime`, file-backed `SettingsMa
 
 Each boundary can be supplied explicitly:
 
-- `modelRuntime`, `model`, `thinkingLevel`, and `scopedModels` control model access and selection.
+- `modelRuntime`, `model`, `thinkingLevel`, `serviceTier`, and `scopedModels` control model access and selection. `serviceTier` replaces the tier restored from the session and throws when the model does not offer that tier.
 - `settingsManager` supplies merged settings or an in-memory configuration.
 - `sessionManager` supplies persistent or in-memory conversation history.
 - `resourceLoader` supplies extensions, skills, prompt templates, themes, and context files.

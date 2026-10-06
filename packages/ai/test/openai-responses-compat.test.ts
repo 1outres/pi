@@ -1,6 +1,9 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
+import {
+	stream as streamOpenAIResponses,
+	streamSimple as streamSimpleOpenAIResponses,
+} from "../src/api/openai-responses.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 
@@ -532,6 +535,46 @@ describe("openai-responses provider defaults", () => {
 			);
 		},
 	);
+
+	it.each([
+		["priority", "priority"],
+		[undefined, undefined],
+	] as const)("forwards the simple %s service tier to the request", async (serviceTier, expected) => {
+		let capturedPayload: Record<string, unknown> | undefined;
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("data: [DONE]\n\n", {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+
+		const stream = streamSimpleOpenAIResponses(
+			getModel("openai", "gpt-5.4"),
+			normalizeContext({
+				systemPrompt: "sys",
+				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+			}),
+			{
+				apiKey: "sk-test-key",
+				serviceTier,
+				onPayload: (payload) => {
+					capturedPayload = payload as Record<string, unknown>;
+				},
+			},
+		);
+
+		for await (const event of stream) {
+			if (event.type === "done" || event.type === "error") break;
+		}
+
+		expect(capturedPayload).toBeDefined();
+		if (expected === undefined) {
+			expect(capturedPayload).not.toHaveProperty("service_tier");
+		} else {
+			expect(capturedPayload).toHaveProperty("service_tier", expected);
+		}
+	});
 });
 
 describe("openai-responses max_output_tokens compat", () => {

@@ -7,11 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	closeOpenAICodexWebSocketSessions,
 	getOpenAICodexWebSocketDebugStats,
+	type OpenAICodexResponsesOptions,
 	resetOpenAICodexWebSocketDebugStats,
 	stream as streamOpenAICodexResponses,
 	streamSimple as streamSimpleOpenAICodexResponses,
 } from "../src/api/openai-codex-responses.ts";
-import type { Api, Context, Model } from "../src/types.ts";
+import type { Api, AssistantMessage, Context, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -95,6 +96,89 @@ function buildSSEPayload({
 	}
 
 	return `${events.join("\n\n")}\n\n`;
+}
+
+function createCodexModel(modelId: string): Model<"openai-codex-responses"> {
+	return {
+		id: modelId,
+		name: modelId,
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 400000,
+		maxTokens: 128000,
+	};
+}
+
+/** Stream a response that uses one million input and output tokens and reports `responseServiceTier`. */
+async function streamWithEchoedServiceTier(
+	modelId: string,
+	requestServiceTier: OpenAICodexResponsesOptions["serviceTier"],
+	responseServiceTier: string,
+): Promise<AssistantMessage> {
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+	const sse = `${[
+		`data: ${JSON.stringify({
+			type: "response.output_item.added",
+			item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+		})}`,
+		`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
+		`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hello" })}`,
+		`data: ${JSON.stringify({
+			type: "response.output_item.done",
+			item: {
+				type: "message",
+				id: "msg_1",
+				role: "assistant",
+				status: "completed",
+				content: [{ type: "output_text", text: "Hello" }],
+			},
+		})}`,
+		`data: ${JSON.stringify({
+			type: "response.completed",
+			response: {
+				status: "completed",
+				service_tier: responseServiceTier,
+				usage: {
+					input_tokens: 1000000,
+					output_tokens: 1000000,
+					total_tokens: 2000000,
+					input_tokens_details: { cached_tokens: 0 },
+				},
+			},
+		})}`,
+	].join("\n\n")}\n\n`;
+	const encoder = new TextEncoder();
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url !== "https://chatgpt.com/backend-api/codex/responses") {
+				return new Response("not found", { status: 404 });
+			}
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode(sse));
+						controller.close();
+					},
+				}),
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		}),
+	);
+
+	return streamOpenAICodexResponses(
+		createCodexModel(modelId),
+		normalizeContext({
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		}),
+		{ apiKey: mockToken(), serviceTier: requestServiceTier, transport: "sse" },
+	).result();
 }
 
 describe("openai-codex streaming", () => {
@@ -1085,101 +1169,77 @@ describe("openai-codex streaming", () => {
 	it.each([
 		["gpt-5.1-codex", "flex", 0.5],
 		["gpt-5.1-codex", "priority", 2],
+		["gpt-5.1-codex", "fast", 2],
 		["gpt-5.5", "flex", 0.5],
 		["gpt-5.5", "priority", 2.5],
+		["gpt-5.5", "fast", 2.5],
 	] as const)(
-		"uses the client-sent %s service tier for %s when Codex echoes default",
+		"prices %s with the client-sent %s service tier when Codex echoes default",
 		async (modelId, serviceTier, multiplier) => {
-			const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
-			process.env.PI_CODING_AGENT_DIR = tempDir;
-			const token = mockToken();
-			const sse = `${[
-				`data: ${JSON.stringify({
-					type: "response.output_item.added",
-					item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
-				})}`,
-				`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
-				`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hello" })}`,
-				`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "message",
-						id: "msg_1",
-						role: "assistant",
-						status: "completed",
-						content: [{ type: "output_text", text: "Hello" }],
-					},
-				})}`,
-				`data: ${JSON.stringify({
-					type: "response.completed",
-					response: {
-						status: "completed",
-						service_tier: "default",
-						usage: {
-							input_tokens: 1000000,
-							output_tokens: 1000000,
-							total_tokens: 2000000,
-							input_tokens_details: { cached_tokens: 0 },
-						},
-					},
-				})}`,
-			].join("\n\n")}\n\n`;
-
-			const encoder = new TextEncoder();
-			const stream = new ReadableStream<Uint8Array>({
-				start(controller) {
-					controller.enqueue(encoder.encode(sse));
-					controller.close();
-				},
-			});
-
-			const fetchMock = vi.fn(async (input: string | URL) => {
-				const url = typeof input === "string" ? input : input.toString();
-				if (url === "https://api.github.com/repos/openai/codex/releases/latest") {
-					return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 });
-				}
-				if (url.startsWith("https://raw.githubusercontent.com/openai/codex/")) {
-					return new Response("PROMPT", { status: 200, headers: { etag: '"etag"' } });
-				}
-				if (url === "https://chatgpt.com/backend-api/codex/responses") {
-					return new Response(stream, {
-						status: 200,
-						headers: { "content-type": "text/event-stream" },
-					});
-				}
-				return new Response("not found", { status: 404 });
-			});
-			vi.stubGlobal("fetch", fetchMock);
-
-			const model: Model<"openai-codex-responses"> = {
-				id: modelId,
-				name: modelId === "gpt-5.5" ? "GPT-5.5" : "GPT-5.1 Codex",
-				api: "openai-codex-responses",
-				provider: "openai-codex",
-				baseUrl: "https://chatgpt.com/backend-api",
-				reasoning: true,
-				input: ["text"],
-				cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 400000,
-				maxTokens: 128000,
-			};
-
-			const context = normalizeContext({
-				systemPrompt: "You are a helpful assistant.",
-				messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
-			});
-
-			const result = await streamOpenAICodexResponses(model, context, {
-				apiKey: token,
-				serviceTier,
-				transport: "sse",
-			}).result();
+			const result = await streamWithEchoedServiceTier(modelId, serviceTier, "default");
 
 			expect(result.usage.cost.input).toBe(1 * multiplier);
 			expect(result.usage.cost.output).toBe(2 * multiplier);
 			expect(result.usage.cost.total).toBe(3 * multiplier);
 		},
 	);
+
+	it.each([
+		["gpt-5.1-codex", "priority", 2],
+		["gpt-5.1-codex", undefined, 2],
+		["gpt-5.5", "priority", 2.5],
+	] as const)(
+		"prices %s like priority when Codex echoes fast for a requested %s service tier",
+		async (modelId, serviceTier, multiplier) => {
+			const result = await streamWithEchoedServiceTier(modelId, serviceTier, "fast");
+
+			expect(result.usage.cost.input).toBe(1 * multiplier);
+			expect(result.usage.cost.output).toBe(2 * multiplier);
+			expect(result.usage.cost.total).toBe(3 * multiplier);
+		},
+	);
+
+	it.each([
+		["priority", "priority"],
+		[undefined, undefined],
+	] as const)("forwards the simple %s service tier to the Codex request body", async (serviceTier, expected) => {
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const sse = buildSSEPayload({ status: "completed" });
+		let requestBody: Record<string, unknown> | null = null;
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL, init?: RequestInit) => {
+				requestBody = decodeCodexRequestBody(init?.body);
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode(sse));
+							controller.close();
+						},
+					}),
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			}),
+		);
+
+		await streamSimpleOpenAICodexResponses(
+			createCodexModel("gpt-5.5"),
+			normalizeContext({
+				systemPrompt: "You are a helpful assistant.",
+				messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+			}),
+			{ apiKey: token, transport: "sse", serviceTier },
+		).result();
+
+		expect(requestBody).not.toBeNull();
+		if (expected === undefined) {
+			expect(requestBody).not.toHaveProperty("service_tier");
+		} else {
+			expect(requestBody).toHaveProperty("service_tier", expected);
+		}
+	});
 
 	it("does not set session-id/x-client-request-id headers when sessionId is not provided", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));

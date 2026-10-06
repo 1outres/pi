@@ -815,6 +815,46 @@ describe("ModelRegistry", () => {
 			expect(registry.find("anthropic", "claude-sonnet-4-6")?.promptCache).toEqual({ short: 300, long: 1800 });
 		});
 
+		test("custom model and model override carry service tiers", async () => {
+			const fast = { id: "priority", name: "Fast", description: "Faster replies" };
+			writeRawModelsJson({
+				"codex-proxy": {
+					baseUrl: "https://codex-proxy.example.com",
+					api: "openai-codex-responses",
+					apiKey: "proxy-key",
+					models: [{ id: "proxy-model", serviceTiers: [fast] }],
+				},
+				"openai-codex": {
+					modelOverrides: {
+						"gpt-5.3-codex-spark": { serviceTiers: [fast] },
+						"gpt-5.5": { serviceTiers: [] },
+					},
+				},
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.getError()).toBeUndefined();
+			expect(registry.find("codex-proxy", "proxy-model")?.serviceTiers).toEqual([fast]);
+			expect(registry.find("openai-codex", "gpt-5.3-codex-spark")?.serviceTiers).toEqual([fast]);
+			expect(registry.find("openai-codex", "gpt-5.5")?.serviceTiers).toEqual([]);
+		});
+
+		test("rejects a service tier that pi does not know", async () => {
+			writeRawModelsJson({
+				"codex-proxy": {
+					baseUrl: "https://codex-proxy.example.com",
+					api: "openai-codex-responses",
+					apiKey: "proxy-key",
+					models: [{ id: "proxy-model", serviceTiers: [{ id: "fast", name: "Fast", description: "" }] }],
+				},
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.getError()).toContain("serviceTiers");
+		});
+
 		// Regression test for https://github.com/earendil-works/pi/issues/9631
 		test("model override deep-merges image resize limits", async () => {
 			writeRawModelsJson({

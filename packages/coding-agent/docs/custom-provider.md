@@ -94,6 +94,8 @@ Every model needs an ID, display name, input capabilities, and cost metadata. Ch
 
 Set `promptCache.short` or `promptCache.long` to the provider's best-effort cache lifetime in seconds when Pi should keep an idle prompt cache warm. Leave them unset to disable cache warming for that retention tier.
 
+Set `serviceTiers` on an `openai-codex-responses` model to the OpenAI service tiers it offers, such as `[{ id: "priority", name: "Fast", description: "Faster replies" }]`. A Codex model without it accepts no tier.
+
 Compatibility flags describe verified differences in an otherwise supported API. Do not enable them based only on an endpoint claiming compatibility.
 
 Confirm the request fields and response behavior against the actual server.

@@ -64,6 +64,7 @@ type ProxySerializableStreamOptions = Pick<
 	| "samplingParams"
 	| "maxTokens"
 	| "reasoning"
+	| "serviceTier"
 	| "cacheRetention"
 	| "sessionId"
 	| "headers"
@@ -107,6 +108,7 @@ function buildProxyRequestOptions(options: ProxyStreamOptions): ProxySerializabl
 		samplingParams: options.samplingParams,
 		maxTokens: options.maxTokens,
 		reasoning: options.reasoning,
+		serviceTier: options.serviceTier,
 		cacheRetention: options.cacheRetention,
 		sessionId: options.sessionId,
 		headers: options.headers,

@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import type { ImageContent, Model, ServiceTier } from "@earendil-works/pi-ai";
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -38,6 +38,9 @@ export type RpcCommand =
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
+
+	// Service tier (null clears it)
+	| { id?: string; type: "set_service_tier"; serviceTier: ServiceTier | null }
 
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
@@ -96,6 +99,8 @@ export interface RpcSlashCommand {
 export interface RpcSessionState {
 	model?: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	/** Null when requests use the provider default. */
+	serviceTier: ServiceTier | null;
 	isStreaming: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
@@ -176,6 +181,9 @@ export type RpcResponse =
 			success: true;
 			data: { levels: ThinkingLevel[] };
 	  }
+
+	// Service tier
+	| { id?: string; type: "response"; command: "set_service_tier"; success: true }
 
 	// Queue modes
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }

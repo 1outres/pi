@@ -78,7 +78,7 @@ Automatic retries, recovery, compaction, or queued work can continue afterward.
 | Add a shortcut or CLI flag | `pi.registerShortcut()` or `pi.registerFlag()` |
 | Send user or custom messages | `pi.sendUserMessage()` or `pi.sendMessage()` |
 | Persist non-context session data | `pi.appendEntry()` |
-| Change active tools, model, or thinking level | Session control methods on `pi` |
+| Change active tools, model, thinking level, or service tier | Session control methods on `pi` |
 | Add a model provider | `pi.registerProvider()` |
 | Add an MCP server | `pi.registerMcpServer()` |
 | Route each request to a model | [`pi.registerVirtualModel()`](virtual-models.md) |

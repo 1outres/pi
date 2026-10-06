@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, ServiceTier } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -57,6 +57,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	sessionStartEvent?: SessionStartEvent;
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
+	serviceTier?: ServiceTier;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	tools?: string[];
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
@@ -223,6 +224,7 @@ export async function createAgentSessionFromServices(
 		sessionManager: options.sessionManager,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
+		serviceTier: options.serviceTier,
 		scopedModels: options.scopedModels,
 		tools: options.tools,
 		excludeTools: options.excludeTools,

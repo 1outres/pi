@@ -37,6 +37,7 @@ import type {
 	ProviderId,
 	ProviderImages,
 	RefreshModelsContext,
+	ServiceTier,
 	SimpleStreamOptions,
 	TextContent,
 	ToolResultMessage,
@@ -1739,6 +1740,15 @@ export interface ExtensionAPI {
 	 */
 	setThinkingLevel(level: ThinkingLevel): void;
 
+	/** Get the current service tier. Undefined means requests use the provider default. */
+	getServiceTier(): ServiceTier | undefined;
+
+	/**
+	 * Set the service tier for the current session. Undefined clears it.
+	 * Throws when the current model does not offer the tier (see `getSupportedServiceTiers()`).
+	 */
+	setServiceTier(tier: ServiceTier | undefined): void;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================
@@ -1955,6 +1965,8 @@ export interface ProviderChatModelConfig extends ProviderModelConfigBase {
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 	/** Best-effort prompt cache lifetime in seconds per retention tier. Unset disables cache warming. */
 	promptCache?: Model<Api>["promptCache"];
+	/** Service tiers that the model offers. Only Codex models read this. */
+	serviceTiers?: Model<Api>["serviceTiers"];
 	/** Maximum context window size in tokens. */
 	contextWindow: number;
 	/** Maximum output tokens. */
@@ -2082,6 +2094,10 @@ export type GetThinkingLevelHandler = () => ThinkingLevel;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
+export type GetServiceTierHandler = () => ServiceTier | undefined;
+
+export type SetServiceTierHandler = (tier: ServiceTier | undefined) => void;
+
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
 /**
@@ -2139,6 +2155,8 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	getServiceTier: GetServiceTierHandler;
+	setServiceTier: SetServiceTierHandler;
 }
 
 /**

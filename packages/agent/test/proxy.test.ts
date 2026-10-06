@@ -96,6 +96,30 @@ describe("streamProxy", () => {
 		expect(result.providerThinkingLevel).toBe("high");
 	});
 
+	it("sends the service tier with the other serializable stream options", async () => {
+		const body = [
+			`data: ${JSON.stringify({ type: "start" })}\n\n`,
+			`data: ${JSON.stringify({ type: "done", reason: "stop", usage })}\n\n`,
+		].join("");
+		let requestBody: unknown;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL, init?: RequestInit) => {
+				requestBody = JSON.parse(String(init?.body));
+				return new Response(body, { status: 200 });
+			}),
+		);
+
+		await streamProxy(model, normalizeContext({ systemPrompt: "", messages: [] }), {
+			authToken: "test-token",
+			proxyUrl: "https://proxy.example.com",
+			reasoning: "high",
+			serviceTier: "priority",
+		}).result();
+
+		expect(requestBody).toMatchObject({ options: { reasoning: "high", serviceTier: "priority" } });
+	});
+
 	it("emits an error instead of hanging when the stream ends without a terminal event", async () => {
 		const body = `data: ${JSON.stringify({ type: "start" })}\n\n`;
 		vi.stubGlobal(

@@ -169,6 +169,7 @@ Response:
   "data": {
     "model": {...},
     "thinkingLevel": "medium",
+    "serviceTier": null,
     "isStreaming": false,
     "isCompacting": false,
     "steeringMode": "all",
@@ -183,7 +184,7 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model-object) object, or omitted when no model is selected. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
+The `model` field is a full [Model](#model-object) object, or omitted when no model is selected. The `serviceTier` field is the tier set via [set_service_tier](#set_service_tier), or `null` when requests use the provider default. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
 
 ### get_messages
 
@@ -325,6 +326,36 @@ Response:
   }
 }
 ```
+
+## Service tier
+
+### set_service_tier
+
+Set the processing tier that later requests send as OpenAI `service_tier`. Codex Fast mode is `"priority"`. Send `null` to clear it, so requests use the provider default.
+
+```json
+{"type": "set_service_tier", "serviceTier": "priority"}
+```
+
+```json
+{"type": "set_service_tier", "serviceTier": null}
+```
+
+Tiers: `"auto"`, `"default"`, `"flex"`, `"scale"`, `"priority"`
+
+OpenAI models on the Responses API accept every tier. OpenAI Codex models accept only the tiers listed in their `serviceTiers`; for built-in Codex models this is `priority` (Fast) on the models that offer it. The change is recorded in the session, so it is restored on resume, and a `service_tier_changed` event is emitted when the tier changes. Switching to a model that does not offer the tier clears it.
+
+Response:
+```json
+{"type": "response", "command": "set_service_tier", "success": true}
+```
+
+If the current model does not offer the tier, `serviceTier` is missing, or the value is not a tier, the response is `success: false` and the tier stays unchanged:
+```json
+{"type": "response", "command": "set_service_tier", "success": false, "error": "Service tiers are not supported by anthropic/claude-sonnet-4-5"}
+```
+
+The current tier is available via `get_state` in the `serviceTier` field. To set the tier when starting RPC mode, pass `--service-tier <tier>` to the `pi --mode rpc` process.
 
 ## Queue modes
 

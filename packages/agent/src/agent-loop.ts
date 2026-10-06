@@ -21,6 +21,7 @@ import type {
 	AgentEvent,
 	AgentLoopConfig,
 	AgentMessage,
+	AgentRequestUpdate,
 	AgentTool,
 	AgentToolCall,
 	AgentToolCallOutcome,
@@ -187,16 +188,7 @@ async function runLoop(
 				if (nextTurnSnapshot) {
 					currentContext = nextTurnSnapshot.context ?? currentContext;
 					preparedMessages = nextTurnSnapshot.messages ?? [];
-					config = {
-						...config,
-						model: nextTurnSnapshot.model ?? config.model,
-						reasoning:
-							nextTurnSnapshot.thinkingLevel === undefined
-								? config.reasoning
-								: nextTurnSnapshot.thinkingLevel === "off"
-									? undefined
-									: nextTurnSnapshot.thinkingLevel,
-					};
+					config = applyRequestUpdate(config, nextTurnSnapshot);
 				}
 				// Preparation can be long-running (for example, compaction). Pick up steering
 				// queued while it ran. Only poll again if the earlier poll returned nothing;
@@ -221,21 +213,13 @@ async function runLoop(
 					context: currentContext,
 					model: config.model,
 					thinkingLevel: config.reasoning ?? "off",
+					serviceTier: config.serviceTier,
 				},
 				signal,
 			);
 			if (requestUpdate) {
 				currentContext = requestUpdate.context ?? currentContext;
-				config = {
-					...config,
-					model: requestUpdate.model ?? config.model,
-					reasoning:
-						requestUpdate.thinkingLevel === undefined
-							? config.reasoning
-							: requestUpdate.thinkingLevel === "off"
-								? undefined
-								: requestUpdate.thinkingLevel,
-				};
+				config = applyRequestUpdate(config, requestUpdate);
 			}
 
 			// Stream assistant response
@@ -318,6 +302,20 @@ async function runLoop(
 	}
 
 	await emit({ type: "agent_end", messages: newMessages });
+}
+
+function applyRequestUpdate(config: AgentLoopConfig, update: AgentRequestUpdate): AgentLoopConfig {
+	return {
+		...config,
+		model: update.model ?? config.model,
+		reasoning:
+			update.thinkingLevel === undefined
+				? config.reasoning
+				: update.thinkingLevel === "off"
+					? undefined
+					: update.thinkingLevel,
+		serviceTier: update.serviceTier === undefined ? config.serviceTier : (update.serviceTier ?? undefined),
+	};
 }
 
 /**

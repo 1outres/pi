@@ -3,9 +3,11 @@
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isServiceTier, SERVICE_TIERS, type ServiceTier } from "@earendil-works/pi-ai";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
+import { formatInvalidServiceTierMessage } from "../core/service-tier.ts";
 import type { TuiMode } from "../core/settings-manager.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -17,6 +19,7 @@ export interface Args {
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
+	serviceTier?: ServiceTier;
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
@@ -164,6 +167,21 @@ export function parseArgs(args: string[]): Args {
 					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
 				});
 			}
+		} else if (arg === "--service-tier") {
+			const tier = args[i + 1];
+			if (tier === undefined || tier.startsWith("-")) {
+				result.diagnostics.push({
+					type: "error",
+					message: `--service-tier requires one of: ${SERVICE_TIERS.join(", ")}`,
+				});
+				continue;
+			}
+			i++;
+			if (!isServiceTier(tier)) {
+				result.diagnostics.push({ type: "error", message: formatInvalidServiceTierMessage(tier) });
+				continue;
+			}
+			result.serviceTier = tier;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 			const next = args[i + 1];
@@ -310,6 +328,7 @@ ${chalk.bold("Options:")}
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
+  --service-tier <tier>          Set service tier for OpenAI and Codex models: ${SERVICE_TIERS.join(", ")}
   --extension, -e <path>         Load an extension file or builtin:<name> (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery and built-in extensions (explicit -e paths still work)
   --skill <path>                 Load a skill file or directory (can be used multiple times)
@@ -384,6 +403,9 @@ ${chalk.bold("Examples:")}
 
   # Start with a specific thinking level
   ${APP_NAME} --thinking high "Solve this complex problem"
+
+  # Use Codex Fast mode
+  ${APP_NAME} --model openai-codex/gpt-5.5 --service-tier priority
 
   # Read-only mode (no file modifications possible)
   ${APP_NAME} --tools read,grep,find,ls -p "Review the code in src/"

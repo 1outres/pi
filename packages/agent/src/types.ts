@@ -7,6 +7,7 @@ import type {
 	JsonValue,
 	Message,
 	Model,
+	ServiceTier,
 	SimpleStreamOptions,
 	TextContent,
 	Tool,
@@ -167,6 +168,8 @@ export interface AgentLoopTurnUpdate {
 	model?: Model<any>;
 	/** Thinking level for the next provider request. */
 	thinkingLevel?: ThinkingLevel;
+	/** Service tier for the next provider request. `null` clears it; omit it to keep the current tier. */
+	serviceTier?: ServiceTier | null;
 }
 
 /** Runtime state available immediately before a conversational provider request. */
@@ -174,6 +177,8 @@ export interface PrepareRequestContext {
 	context: AgentContext;
 	model: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	/** Requested service tier. Undefined uses the provider default. */
+	serviceTier?: ServiceTier;
 }
 
 /** Replacement runtime state for the provider request being prepared. */
@@ -265,14 +270,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/**
 	 * Called immediately before every conversational provider request, including the first.
-	 * Pending messages have already been appended. The returned context, model, and thinking level
-	 * replace the runtime values for this and later requests in the run. This hook does not poll queues.
+	 * Pending messages have already been appended. The returned context, model, thinking level, and service
+	 * tier replace the runtime values for this and later requests in the run. This hook does not poll queues.
 	 */
 	prepareRequest?: PrepareRequest;
 
 	/**
 	 * Called after `turn_end` when the loop will continue, immediately before the next turn starts.
-	 * Return replacement context/model/thinking state or messages to append to affect that turn.
+	 * Return replacement context/model/thinking/service tier state or messages to append to affect that turn.
 	 * Return undefined to keep using the current context/config.
 	 */
 	prepareNextTurn?: (
@@ -391,6 +396,8 @@ export interface AgentState {
 	model: Model<any>;
 	/** Requested reasoning level for future turns. */
 	thinkingLevel: ThinkingLevel;
+	/** Requested service tier for future turns. Undefined uses the provider default. */
+	serviceTier?: ServiceTier;
 	/**
 	 * Executable tools. Assigning a new array copies the top-level array.
 	 *

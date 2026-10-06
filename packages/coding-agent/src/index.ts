@@ -289,6 +289,7 @@ export {
 	type NewSessionOptions,
 	type ProjectedSessionEntry,
 	parseSessionEntries,
+	type ServiceTierChangeEntry,
 	type SessionContext,
 	type SessionEntry,
 	type SessionEntryBase,

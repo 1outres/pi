@@ -24,6 +24,7 @@ import type {
 	Model,
 	ModelCost,
 	ModelPromptCache,
+	ModelServiceTier,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 } from "../src/types.ts";
@@ -3204,6 +3205,11 @@ async function generateModels() {
 	const CODEX_GPT_56_CONTEXT = 272000;
 	const CODEX_SPARK_CONTEXT = 128000;
 	const CODEX_MAX_TOKENS = 128000;
+	// Copied from the Codex model catalog (`codex debug models`).
+	const codexFastTier = (description: string): ModelServiceTier[] => [{ id: "priority", name: "Fast", description }];
+	const CODEX_FAST_2X = codexFastTier("2x speed, increased usage");
+	const CODEX_FAST_15X = codexFastTier("1.5x speed");
+	const CODEX_FAST_15X_USAGE = codexFastTier("1.5x speed, increased usage");
 	const codexModels: Model<"openai-codex-responses">[] = [
 		{
 			id: "gpt-6.1-sol",
@@ -3216,6 +3222,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_2X,
 		},
 		{
 			id: "gpt-6-astra",
@@ -3228,6 +3235,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-astra"]),
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_2X,
 		},
 		{
 			id: "gpt-6-sol",
@@ -3240,6 +3248,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-sol"]),
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_15X,
 		},
 		{
 			id: "gpt-6-luna",
@@ -3252,6 +3261,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-luna"]),
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_15X,
 		},
 		{
 			id: "gpt-5.3-codex-spark",
@@ -3276,6 +3286,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 }),
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_15X_USAGE,
 		},
 		{
 			id: "gpt-5.6-luna",
@@ -3288,6 +3299,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-luna"]),
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_15X_USAGE,
 		},
 		{
 			id: "gpt-5.6-sol",
@@ -3300,6 +3312,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-sol"]),
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_15X_USAGE,
 		},
 		{
 			id: "gpt-5.6-terra",
@@ -3312,6 +3325,7 @@ async function generateModels() {
 			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-terra"]),
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
+			serviceTiers: CODEX_FAST_15X_USAGE,
 		},
 	];
 	allModels.push(...codexModels);

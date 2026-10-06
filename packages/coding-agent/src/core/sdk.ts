@@ -1,7 +1,13 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
+import {
+	clampThinkingLevel,
+	type Message,
+	type Model,
+	type ServiceTier,
+	streamSimple,
+} from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -15,6 +21,7 @@ import { ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
+import { assertServiceTierSupported, modelOffersServiceTier } from "./service-tier.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { DEFAULT_TOOL_NAMES, SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
@@ -51,6 +58,11 @@ export interface CreateAgentSessionOptions {
 	model?: Model<any>;
 	/** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
 	thinkingLevel?: ThinkingLevel;
+	/**
+	 * Service tier for provider requests. Default: restored from the session, else the provider default.
+	 * Throws when the model does not support service tiers.
+	 */
+	serviceTier?: ServiceTier;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
@@ -261,6 +273,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
+	if (options.serviceTier !== undefined) {
+		assertServiceTierSupported(model, options.serviceTier);
+	}
+	const restoredServiceTier = existingSession.serviceTier;
+	const serviceTier =
+		options.serviceTier ??
+		(restoredServiceTier !== undefined && modelOffersServiceTier(model, restoredServiceTier)
+			? restoredServiceTier
+			: undefined);
+
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
@@ -389,6 +411,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			systemPrompt: "",
 			model,
 			thinkingLevel,
+			serviceTier,
 			tools: [],
 			messages: existingSession.messages,
 		},
@@ -432,6 +455,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionManager.appendModelChange(model.provider, model.id);
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
+	}
+	if (serviceTier !== restoredServiceTier) {
+		sessionManager.appendServiceTierChange(serviceTier ?? null);
 	}
 
 	const session = new AgentSession({

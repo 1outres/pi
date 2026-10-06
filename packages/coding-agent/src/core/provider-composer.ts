@@ -68,6 +68,7 @@ export interface ProviderChatModelConfig extends ProviderModelConfigBase {
 	reasoning: boolean;
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 	promptCache?: Model<Api>["promptCache"];
+	serviceTiers?: Model<Api>["serviceTiers"];
 	contextWindow: number;
 	maxTokens: number;
 	samplingParams?: Record<string, unknown>;
@@ -182,6 +183,7 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 				}
 			: model.cost,
 		promptCache: override.promptCache ? { ...model.promptCache, ...override.promptCache } : model.promptCache,
+		serviceTiers: override.serviceTiers ?? model.serviceTiers,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
 		samplingParams: override.samplingParams
@@ -223,6 +225,7 @@ function modelFromJson(
 		inputLimits: definition.inputLimits,
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		promptCache: definition.promptCache,
+		serviceTiers: definition.serviceTiers,
 		contextWindow: definition.contextWindow ?? 128000,
 		maxTokens: definition.maxTokens ?? 16384,
 		samplingParams: definition.samplingParams,

@@ -110,6 +110,16 @@ Emitted when the user changes the thinking/reasoning level.
 {"type":"thinking_level_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","thinkingLevel":"high"}
 ```
 
+### ServiceTierChangeEntry
+
+Emitted when the service tier changes. `serviceTier` is one of `auto`, `default`, `flex`, `scale`, or `priority` (Codex Fast mode). `null` clears it, so requests use the provider default. A session without these entries uses the provider default.
+
+Pi also writes `null` when the selected model does not offer the tier, for example after switching away from an OpenAI or Codex model, or when a resumed session's model cannot use the recorded tier.
+
+```json
+{"type":"service_tier_change","id":"e6f7g8h9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","serviceTier":"priority"}
+```
+
 ### UsageEntry
 
 Records model-attributed usage that is not an assistant message and does not participate in LLM context. `kind` is an arbitrary string identifying the operation; for example, cache warming uses `"cache_warm"`.
@@ -236,7 +246,7 @@ Entries normally form one tree, but navigation APIs can create multiple roots:
 
 `buildSessionContext()` builds on that projection to produce the message list for the LLM:
 
-1. Extracts current model and thinking level settings from the full path
+1. Extracts current model, thinking level, and service tier settings from the full path
 2. Converts selected entries to messages:
    - `message` -> stored `AgentMessage`
    - `compaction` -> complete system checkpoint followed by `compactionSummary`
@@ -287,6 +297,9 @@ for (const line of lines) {
       break;
     case "thinking_level_change":
       console.log(`[${entry.id}] Thinking: ${entry.thinkingLevel}`);
+      break;
+    case "service_tier_change":
+      console.log(`[${entry.id}] Service tier: ${entry.serviceTier ?? "provider default"}`);
       break;
   }
 }

@@ -1,3 +1,4 @@
+import { SERVICE_TIERS } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
 import { normalizeSessionName, parseArgs } from "../src/cli/args.ts";
 
@@ -185,6 +186,45 @@ describe("parseArgs", () => {
 			const result = parseArgs(["--mode", "json", "--mode", "yaml"]);
 			expect(result.diagnostics).toEqual([
 				{ type: "error", message: 'Invalid mode "yaml". Valid values: text, json, rpc' },
+			]);
+		});
+	});
+
+	describe("--service-tier flag", () => {
+		test.each(SERVICE_TIERS)("parses --service-tier %s", (tier) => {
+			const result = parseArgs(["--service-tier", tier]);
+			expect(result.serviceTier).toBe(tier);
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("rejects a value that is not a service tier", () => {
+			const result = parseArgs(["--service-tier", "fast", "--version"]);
+			expect(result.serviceTier).toBeUndefined();
+			expect(result.version).toBe(true);
+			expect(result.messages).toEqual([]);
+			expect(result.diagnostics).toEqual([
+				{
+					type: "error",
+					message: 'Invalid service tier "fast". Valid values: auto, default, flex, scale, priority',
+				},
+			]);
+		});
+
+		test("reports a missing --service-tier value", () => {
+			const result = parseArgs(["--service-tier"]);
+			expect(result.serviceTier).toBeUndefined();
+			expect(result.unknownFlags.size).toBe(0);
+			expect(result.diagnostics).toEqual([
+				{ type: "error", message: "--service-tier requires one of: auto, default, flex, scale, priority" },
+			]);
+		});
+
+		test("does not consume another option as a --service-tier value", () => {
+			const result = parseArgs(["--service-tier", "--version"]);
+			expect(result.serviceTier).toBeUndefined();
+			expect(result.version).toBe(true);
+			expect(result.diagnostics).toEqual([
+				{ type: "error", message: "--service-tier requires one of: auto, default, flex, scale, priority" },
 			]);
 		});
 	});

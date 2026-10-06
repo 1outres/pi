@@ -95,6 +95,8 @@ describe("ExtensionRunner", () => {
 		setModel: async () => false,
 		getThinkingLevel: () => "off",
 		setThinkingLevel: () => {},
+		getServiceTier: () => undefined,
+		setServiceTier: () => {},
 	};
 
 	const extensionContextActions: ExtensionContextActions = {

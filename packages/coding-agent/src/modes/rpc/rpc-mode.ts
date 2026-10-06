@@ -450,6 +450,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
+					serviceTier: session.serviceTier ?? null,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
 					steeringMode: session.steeringMode,
@@ -511,6 +512,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_available_thinking_levels": {
 				const levels = session.getAvailableThinkingLevels();
 				return success(id, "get_available_thinking_levels", { levels });
+			}
+
+			// =================================================================
+			// Service Tier
+			// =================================================================
+
+			case "set_service_tier": {
+				if (command.serviceTier === undefined) {
+					return error(id, "set_service_tier", "set_service_tier requires serviceTier: a service tier or null");
+				}
+				session.setServiceTier(command.serviceTier ?? undefined);
+				return success(id, "set_service_tier");
 			}
 
 			// =================================================================

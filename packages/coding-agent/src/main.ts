@@ -845,6 +845,13 @@ export async function main(args: string[], options?: MainOptions) {
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
 		}
+		if (parsed.serviceTier !== undefined) {
+			try {
+				created.session.setServiceTier(parsed.serviceTier);
+			} catch (error) {
+				diagnostics.push({ type: "error", message: error instanceof Error ? error.message : String(error) });
+			}
+		}
 
 		return {
 			...created,

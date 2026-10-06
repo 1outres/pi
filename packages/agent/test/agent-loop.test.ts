@@ -4,6 +4,7 @@ import {
 	EventStream,
 	type Message,
 	type Model,
+	type ServiceTier,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -14,6 +15,7 @@ import type {
 	AgentContext,
 	AgentEvent,
 	AgentLoopConfig,
+	AgentLoopTurnUpdate,
 	AgentMessage,
 	AgentTool,
 	AgentToolCall,
@@ -1383,6 +1385,7 @@ describe("agentLoop with AgentMessage", () => {
 					context: { ...context, messages: [canonicalMessage] },
 					model: replacementModel,
 					thinkingLevel: "high",
+					serviceTier: "flex",
 				};
 			},
 		};
@@ -1399,6 +1402,7 @@ describe("agentLoop with AgentMessage", () => {
 				expect(model).toBe(replacementModel);
 				expect(context.messages).toEqual([canonicalMessage]);
 				expect(options?.reasoning).toBe("high");
+				expect(options?.serviceTier).toBe("flex");
 				const response = new MockAssistantStream();
 				queueMicrotask(() => {
 					response.push({
@@ -1412,6 +1416,63 @@ describe("agentLoop with AgentMessage", () => {
 		);
 
 		expect(prepareCalls).toBe(1);
+	});
+
+	it("keeps the service tier when a turn update omits it and clears it with null", async () => {
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, undefined> = {
+			name: "noop",
+			label: "Noop",
+			description: "Noop tool",
+			parameters: toolSchema,
+			async execute() {
+				return { content: [{ type: "text", text: "done" }], details: undefined };
+			},
+		};
+		const turnUpdates: AgentLoopTurnUpdate[] = [{ thinkingLevel: "high" }, { serviceTier: null }];
+		const preparedTiers: Array<ServiceTier | undefined> = [];
+		const requestTiers: Array<ServiceTier | undefined> = [];
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			serviceTier: "priority",
+			prepareNextTurn: () => turnUpdates.shift(),
+			prepareRequest: ({ serviceTier }) => {
+				preparedTiers.push(serviceTier);
+			},
+		};
+
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ messages: [], tools: [tool] },
+			config,
+			undefined,
+			(_model, _context, options) => {
+				requestTiers.push(options?.serviceTier);
+				const request = requestTiers.length;
+				const response = new MockAssistantStream();
+				queueMicrotask(() => {
+					if (request < 3) {
+						const message = createAssistantMessage(
+							[{ type: "toolCall", id: `tool-${request}`, name: "noop", arguments: {} }],
+							"toolUse",
+						);
+						response.push({ type: "done", reason: "toolUse", message });
+						return;
+					}
+					response.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				});
+				return response;
+			},
+		);
+		await stream.result();
+
+		expect(requestTiers).toEqual(["priority", "priority", undefined]);
+		expect(preparedTiers).toEqual(["priority", "priority", undefined]);
 	});
 
 	it("does not poll steering after prepareRequest", async () => {

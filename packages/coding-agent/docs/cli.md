@@ -68,6 +68,8 @@ See [Choose a Model](models.md) for model selection and [Provider Authentication
   Uses a non-persistent API-key override. It requires a model selected through `--model` or `--models`.
 - `--thinking <level>`<br>
   Sets `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It overrides a `--model` suffix and is clamped to the model's capabilities.
+- `--service-tier <tier>`<br>
+  Sets the OpenAI service tier: `auto`, `default`, `flex`, `scale`, or `priority` (Codex Fast mode). It replaces the tier recorded in a resumed session. OpenAI models on the Responses API accept every tier. OpenAI Codex models accept only the tiers listed in their `serviceTiers`; for built-in Codex models this is `priority` (Fast) on the models that offer it. With any other model or tier Pi reports an error and exits.
 - `--models <patterns>`<br>
   Sets a comma-separated scope for startup and cycling. It accepts exact IDs, fuzzy matches, case-insensitive globs, and optional `:<thinking>` suffixes.
 - `--list-models [search]`<br>

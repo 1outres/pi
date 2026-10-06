@@ -96,7 +96,17 @@ Use `promptCache` to declare the provider's best-effort cache lifetime in second
 { "id": "claude-sonnet-5", "promptCache": { "short": 300, "long": 3600 } }
 ```
 
-Choose the conservative end of any published range. A model without a lifetime for the active tier is not eligible for cache warming. A `modelOverrides` entry can set `inputLimits` or `promptCache` for a built-in or extension model, including a model accessed through a validated proxy. See [`cacheWarming`](settings.md#model-and-thinking).
+Choose the conservative end of any published range. A model without a lifetime for the active tier is not eligible for cache warming. A `modelOverrides` entry can set `inputLimits`, `promptCache`, or `serviceTiers` for a built-in or extension model, including a model accessed through a validated proxy. See [`cacheWarming`](settings.md#model-and-thinking).
+
+<a id="service-tiers"></a>
+
+Use `serviceTiers` to list the OpenAI service tiers an `openai-codex-responses` model offers. Pi sends only these tiers to the model, and front ends such as Paseo show them as speed choices:
+
+```json
+{ "id": "gpt-5.5", "serviceTiers": [{ "id": "priority", "name": "Fast", "description": "1.5x speed, increased usage" }] }
+```
+
+A Codex model without `serviceTiers` accepts no tier. A `modelOverrides` entry replaces the whole list.
 
 Compatibility settings should describe verified differences in the endpoint's request or response behavior. Do not enable them based only on an endpoint advertising OpenAI or Anthropic compatibility.
 

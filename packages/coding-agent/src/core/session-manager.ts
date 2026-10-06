@@ -5,6 +5,7 @@ import {
 	type ImageContent,
 	type Message,
 	type ProviderHistoryMessage,
+	type ServiceTier,
 	type SystemMessage,
 	type TextContent,
 	type ToolResultMessage,
@@ -76,6 +77,12 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
 	modelId: string;
+}
+
+export interface ServiceTierChangeEntry extends SessionEntryBase {
+	type: "service_tier_change";
+	/** Null clears the tier so requests use the provider default. */
+	serviceTier: ServiceTier | null;
 }
 
 export interface UsageEntry extends SessionEntryBase {
@@ -187,6 +194,7 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| ServiceTierChangeEntry
 	| UsageEntry
 	| CompactionEntry
 	| BranchSummaryEntry
@@ -221,12 +229,14 @@ export interface SessionProjection {
 	messages: AgentMessage[];
 	thinkingLevel: string;
 	model: { provider: string; modelId: string } | null;
+	serviceTier?: ServiceTier;
 }
 
 export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
 	model: { provider: string; modelId: string } | null;
+	serviceTier?: ServiceTier;
 }
 
 export interface SessionInfo {
@@ -418,21 +428,26 @@ function buildSessionPath(
 	return path;
 }
 
-function getSessionContextSettings(path: SessionEntry[]): Pick<SessionContext, "thinkingLevel" | "model"> {
+function getSessionContextSettings(
+	path: SessionEntry[],
+): Pick<SessionContext, "thinkingLevel" | "model" | "serviceTier"> {
 	let thinkingLevel = "off";
 	let model: { provider: string; modelId: string } | null = null;
+	let serviceTier: ServiceTier | undefined;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel;
 		} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
+		} else if (entry.type === "service_tier_change") {
+			serviceTier = entry.serviceTier ?? undefined;
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			model = { provider: entry.message.provider, modelId: entry.message.model };
 		}
 	}
 
-	return { thinkingLevel, model };
+	return { thinkingLevel, model, serviceTier };
 }
 
 /**
@@ -559,7 +574,7 @@ export function buildSessionProjection(
 	byId?: Map<string, SessionEntry>,
 ): SessionProjection {
 	const path = buildSessionPath(entries, leafId, byId);
-	const { thinkingLevel, model } = getSessionContextSettings(path);
+	const { thinkingLevel, model, serviceTier } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leafId, byId);
 	const edits = new Map<string, ContextEditEntry>();
 	for (const entry of contextEntries) {
@@ -582,6 +597,7 @@ export function buildSessionProjection(
 		messages: projectedEntries.flatMap((entry) => entry.messages),
 		thinkingLevel,
 		model,
+		serviceTier,
 	};
 }
 
@@ -591,8 +607,8 @@ export function buildSessionContext(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 ): SessionContext {
-	const { messages, thinkingLevel, model } = buildSessionProjection(entries, leafId, byId);
-	return { messages, thinkingLevel, model };
+	const { messages, thinkingLevel, model, serviceTier } = buildSessionProjection(entries, leafId, byId);
+	return { messages, thinkingLevel, model, serviceTier };
 }
 
 /**
@@ -1255,6 +1271,19 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append a service tier change as child of current leaf, then advance leaf. Null clears the tier. Returns entry id. */
+	appendServiceTierChange(serviceTier: ServiceTier | null): string {
+		const entry: ServiceTierChangeEntry = {
+			type: "service_tier_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			serviceTier,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append model-attributed usage that does not participate in LLM context. Returns the appended entry. */
 	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): UsageEntry {
 		const entry: UsageEntry = {
@@ -1515,8 +1544,8 @@ export class SessionManager {
 	}
 
 	buildSessionContext(): SessionContext {
-		const { messages, thinkingLevel, model } = this.buildSessionProjection();
-		return { messages, thinkingLevel, model };
+		const { messages, thinkingLevel, model, serviceTier } = this.buildSessionProjection();
+		return { messages, thinkingLevel, model, serviceTier };
 	}
 
 	/**

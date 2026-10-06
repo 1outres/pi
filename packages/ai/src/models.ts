@@ -47,6 +47,7 @@ import type {
 	ProviderImages,
 	ProviderRequestOptions,
 	ProviderStreams,
+	ServiceTier,
 	SimpleStreamOptions,
 	TranscriptContext,
 	Usage,
@@ -1288,6 +1289,36 @@ export function clampThinkingLevel<TApi extends Api>(
 		if (availableLevels.includes(candidate)) return candidate;
 	}
 	return availableLevels[0] ?? "off";
+}
+
+const SERVICE_TIER_VALUES: Record<ServiceTier, true> = {
+	auto: true,
+	default: true,
+	flex: true,
+	scale: true,
+	priority: true,
+};
+
+/** Every service tier pi can request. */
+export const SERVICE_TIERS = Object.keys(SERVICE_TIER_VALUES) as readonly ServiceTier[];
+
+export function isServiceTier(value: unknown): value is ServiceTier {
+	return typeof value === "string" && Object.hasOwn(SERVICE_TIER_VALUES, value);
+}
+
+/**
+ * Service tiers that requests to `model` can carry. Codex accepts only the tiers in its model catalog.
+ * Other services on the OpenAI Responses API, such as xAI or GitHub Copilot, do not accept OpenAI's
+ * `service_tier`.
+ */
+export function getSupportedServiceTiers<TApi extends Api>(model: Model<TApi>): readonly ServiceTier[] {
+	if (model.api === "openai-codex-responses") return model.serviceTiers?.map((tier) => tier.id) ?? [];
+	if (model.api === "openai-responses" && model.provider === "openai") return SERVICE_TIERS;
+	return [];
+}
+
+export function supportsServiceTier<TApi extends Api>(model: Model<TApi>): boolean {
+	return getSupportedServiceTiers(model).length > 0;
 }
 
 /**
