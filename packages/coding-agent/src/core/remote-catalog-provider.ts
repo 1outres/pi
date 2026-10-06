@@ -28,11 +28,19 @@ function isSupportedModelType(model: { type?: unknown }): boolean {
 	);
 }
 
+// The pi.dev catalog does not carry service tiers, so a replaced model keeps
+// the tiers from the built-in data unless the catalog lists its own.
+function replaceModel<TModel extends AnyModel>(baseline: TModel, model: TModel): TModel {
+	if (!isModelType(baseline, "chat") || !isModelType(model, "chat")) return model;
+	if (model.serviceTiers !== undefined || baseline.serviceTiers === undefined) return model;
+	return { ...model, serviceTiers: baseline.serviceTiers };
+}
+
 function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynamic: readonly TModel[]): TModel[] {
 	const merged = [...baseline];
 	for (const model of dynamic) {
 		const index = merged.findIndex((entry) => getModelType(entry) === getModelType(model) && entry.id === model.id);
-		if (index >= 0) merged[index] = model;
+		if (index >= 0) merged[index] = replaceModel(merged[index], model);
 		else merged.push(model);
 	}
 	return merged;

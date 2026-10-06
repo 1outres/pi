@@ -3,6 +3,7 @@ import {
 	createProvider,
 	InMemoryModelsStore,
 	type Model,
+	type ModelServiceTier,
 	type ModelsPublication,
 	type Provider,
 	type RefreshModelsContext,
@@ -28,12 +29,12 @@ function model(id: string): Model<"openai-completions"> {
 	};
 }
 
-function testProvider(localGeneratedAt?: number) {
+function testProvider(localGeneratedAt?: number, models: Model<"openai-completions">[] = [model("static")]) {
 	return withRemoteCatalog(
 		createProvider({
 			id: "test-provider",
 			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
-			models: [model("static")],
+			models,
 			api: {
 				stream: () => {
 					throw new Error("not used");
@@ -165,6 +166,30 @@ describe("remote catalog provider", () => {
 		await refreshProvider(provider, store, { force: true });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "newer"]);
 		expect(await store.read(provider.id)).toMatchObject({ lastModified: Date.parse(newerHeader) });
+	});
+
+	it("keeps the built-in service tiers of a model that the remote catalog replaces", async () => {
+		const fast: ModelServiceTier[] = [{ id: "priority", name: "Fast", description: "Faster replies" }];
+		const flex: ModelServiceTier[] = [{ id: "flex", name: "Flex", description: "Cheaper replies" }];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () =>
+				new Response(
+					JSON.stringify({
+						fast: { ...model("fast"), name: "Fast (remote)" },
+						flex: { ...model("flex"), serviceTiers: flex },
+					}),
+				),
+		);
+		const provider = testProvider(undefined, [
+			{ ...model("fast"), serviceTiers: fast },
+			{ ...model("flex"), serviceTiers: fast },
+		]);
+
+		await refreshProvider(provider, new InMemoryModelsStore());
+
+		const models = provider.getModels() as Model<"openai-completions">[];
+		expect(models.find((entry) => entry.id === "fast")).toMatchObject({ name: "Fast (remote)", serviceTiers: fast });
+		expect(models.find((entry) => entry.id === "flex")?.serviceTiers).toEqual(flex);
 	});
 
 	it("revalidates a stored catalog with its etag and keeps the overlay on 304", async () => {

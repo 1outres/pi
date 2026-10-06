@@ -106,7 +106,7 @@ Use `serviceTiers` to list the OpenAI service tiers an `openai-codex-responses` 
 { "id": "gpt-5.5", "serviceTiers": [{ "id": "priority", "name": "Fast", "description": "1.5x speed, increased usage" }] }
 ```
 
-A Codex model without `serviceTiers` accepts no tier. A `modelOverrides` entry replaces the whole list.
+A Codex model without `serviceTiers` accepts no tier. A `modelOverrides` entry replaces the whole list. When the pi.dev catalog updates a built-in model, the model keeps its built-in `serviceTiers` unless the catalog lists its own.
 
 Compatibility settings should describe verified differences in the endpoint's request or response behavior. Do not enable them based only on an endpoint advertising OpenAI or Anthropic compatibility.
 
